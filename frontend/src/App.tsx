@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { Component, inventoryApi } from "./api";
 
 export function App() {
@@ -42,6 +42,19 @@ export function App() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar"); }
   }
 
+  async function importFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const result = await inventoryApi.import(file, token);
+      await load();
+      setError(`Importación completada: ${result.data.imported} filas procesadas.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo importar el Excel");
+    }
+  }
+
   return <main>
     <header><div><span className="eyebrow">CLUB DE IoT</span><h1>Centro de inventario</h1></div><button className="secondary" onClick={() => void load()}>Actualizar</button></header>
     {error && <div className="alert">{error}</div>}
@@ -59,7 +72,7 @@ export function App() {
       </div>
       <aside>
         {!token ? <form className="panel form" onSubmit={signIn}><h2>Acceso de encargado</h2><p>Inicia sesión para administrar el inventario.</p><input placeholder="Usuario" value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /><input type="password" placeholder="Contraseña" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /><button>Iniciar sesión</button></form> :
-          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><input required placeholder="ID (ej. arduino-uno)" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /><input required placeholder="Nombre" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /><div className="row"><input type="number" min="0" placeholder="Total" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /><input type="number" min="0" placeholder="Disponible" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></div><button>Guardar componente</button><button type="button" className="secondary" onClick={() => { localStorage.removeItem("iot-token"); setToken(""); }}>Cerrar sesión</button></form>}
+          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><label className="file-label">Importar Excel (.xlsx/.xls)<input type="file" accept=".xlsx,.xls" onChange={(event) => void importFile(event)} /></label><input required placeholder="ID (ej. arduino-uno)" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /><input required placeholder="Nombre" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /><div className="row"><input type="number" min="0" placeholder="Total" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /><input type="number" min="0" placeholder="Disponible" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></div><button>Guardar componente</button><button type="button" className="secondary" onClick={() => { localStorage.removeItem("iot-token"); setToken(""); }}>Cerrar sesión</button></form>}
       </aside>
     </section>
   </main>;

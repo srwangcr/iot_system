@@ -60,3 +60,30 @@ export async function deleteComponent(id: string): Promise<boolean> {
   const result = await pool.query("DELETE FROM inventory_components WHERE id = $1", [id]);
   return result.rowCount === 1;
 }
+
+export async function upsertComponents(components: HardwareComponent[]): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const component of components) {
+      await client.query(
+        `INSERT INTO inventory_components (id, name, category, quantity, available)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           category = EXCLUDED.category,
+           quantity = EXCLUDED.quantity,
+           available = EXCLUDED.available,
+           updated_at = NOW()`,
+        [component.id, component.name, component.category, component.quantity, component.available],
+      );
+    }
+    await client.query("COMMIT");
+    return components.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}

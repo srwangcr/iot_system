@@ -9,9 +9,13 @@ export interface Component {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData = options?.body instanceof FormData;
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: {
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
+      ...options?.headers,
+    },
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -27,6 +31,11 @@ export const inventoryApi = {
   }),
   remove: (id: string, token: string) => request<void>(`/api/inventory/components/${id}`, {
     method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+  }),
+  import: (file: File, token: string) => request<{ data: { imported: number } }>("/api/inventory/import", {
+    method: "POST",
+    body: (() => { const form = new FormData(); form.append("file", file); return form; })(),
+    headers: { Authorization: `Bearer ${token}` },
   }),
   login: (username: string, password: string) => request<{ data: { token: string; role: string } }>("/api/auth/login", {
     method: "POST", body: JSON.stringify({ username, password }),

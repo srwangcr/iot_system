@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { createComponent, deleteComponent, findComponents, updateComponent } from "./database.js";
+import { importInventoryWorkbook } from "./importer.js";
 
 const componentFields = z.object({
   id: z.string().trim().min(1).regex(/^[a-z0-9-]+$/),
@@ -77,5 +78,23 @@ export async function removeComponent(request: Request, response: Response): Pro
     response.status(204).send();
   } catch (error) {
     handleError(error, response);
+  }
+}
+
+export async function importComponents(request: Request, response: Response): Promise<void> {
+  try {
+    if (!request.file) {
+      response.status(400).json({ error: "Attach an Excel file using the 'file' field" });
+      return;
+    }
+    const result = await importInventoryWorkbook(request.file.buffer);
+    response.json({ data: result });
+  } catch (error) {
+    if (error instanceof Error && !("code" in error)) {
+      response.status(400).json({ error: error.message });
+      return;
+    }
+    console.error(error);
+    response.status(500).json({ error: "Could not import inventory" });
   }
 }
