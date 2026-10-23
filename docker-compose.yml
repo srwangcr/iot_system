@@ -10,9 +10,27 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgresql://iot:change-me-in-production@postgres:5432/iot_club
+      AUTH_ADMIN_USERNAME: admin
+      AUTH_ADMIN_PASSWORD: change-me-in-production
+      AUTH_ADMIN_TOKEN: replace-admin-token
+      AUTH_MEMBER_USERNAME: member
+      AUTH_MEMBER_PASSWORD: change-me-in-production
+      AUTH_MEMBER_TOKEN: replace-member-token
     depends_on:
       postgres:
         condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3000
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
 
   postgres:
     image: postgres:16-alpine

@@ -1,0 +1,19 @@
+:root { font-family: Inter, system-ui, sans-serif; color: #17202a; background: #f4f7f8; font-size: 16px; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1280px; margin: auto; padding: 48px 28px; }
+header, .panel-title, .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.eyebrow { color: #168b78; font-size: .75rem; letter-spacing: .16em; font-weight: 800; }
+h1 { margin: 8px 0 32px; font-size: clamp(2rem, 5vw, 3.4rem); letter-spacing: -.05em; }
+h2 { margin: 0; font-size: 1.15rem; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.stats article, .panel { background: white; border: 1px solid #e2e9e8; border-radius: 14px; padding: 22px; box-shadow: 0 8px 30px #183c4510; }
+.stats span, .panel-title span, small { display: block; color: #718086; font-size: .85rem; }
+.stats strong { display: block; margin-top: 10px; font-size: 2rem; }
+.grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 24px; }
+.panel-title { margin-bottom: 20px; }
+.table-wrap { overflow-x: auto; } table { border-collapse: collapse; width: 100%; } th, td { padding: 15px 10px; text-align: left; border-bottom: 1px solid #edf1f1; white-space: nowrap; } th { color: #718086; font-size: .75rem; text-transform: uppercase; } td small { margin-top: 4px; }
+.badge { background: #d8f4e9; border-radius: 999px; color: #147250; padding: 5px 10px; font-weight: 700; } .warning { background: #fff0d1; color: #a36300; }
+button { border: 0; border-radius: 8px; padding: 11px 16px; background: #168b78; color: white; font: inherit; font-weight: 700; cursor: pointer; } button:hover { filter: brightness(.94); } .secondary { background: #e8efee; color: #295159; } .delete { padding: 5px 8px; background: transparent; color: #c04d4d; font-size: .8rem; }
+.form { display: flex; flex-direction: column; align-items: stretch; gap: 12px; } .form p { color: #718086; margin: -8px 0 8px; line-height: 1.5; } input { width: 100%; border: 1px solid #d6e0df; border-radius: 8px; padding: 12px; font: inherit; } .alert { background: #ffe1e1; color: #9b3030; padding: 13px 16px; border-radius: 8px; margin-bottom: 20px; }
+@media (max-width: 800px) { main { padding: 28px 16px; } .stats { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; } }

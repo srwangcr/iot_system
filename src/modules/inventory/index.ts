@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { ModuleContext, IModule } from "../../core/module.js";
 import { registerInventoryRoutes } from "./routes.js";
+import { initializeInventoryDatabase } from "./database.js";
 
 const inventoryModule: IModule = {
   name: "inventory",
@@ -8,8 +9,8 @@ const inventoryModule: IModule = {
   registerRoutes(app: Express): void {
     registerInventoryRoutes(app);
   },
-  registerHooks(_context: ModuleContext): void {
-    // Reserved for inventory domain events.
+  async registerHooks(_context: ModuleContext): Promise<void> {
+    await initializeInventoryDatabase();
   },
 };
 
