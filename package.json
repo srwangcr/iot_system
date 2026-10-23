@@ -1,0 +1,23 @@
+{
+  "name": "iot-club-management",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Modular IoT club management backend",
+  "scripts": {
+    "build": "tsc && node scripts/copy-manifests.cjs",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
