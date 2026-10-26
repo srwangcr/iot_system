@@ -18,24 +18,27 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
+    if (response.status === 401) throw new Error("AUTH_REQUIRED");
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error ?? "No se pudo completar la solicitud");
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
 
+const authHeaders = (token: string) => ({ Authorization: `Bearer ${token}` });
+
 export const inventoryApi = {
-  list: () => request<{ data: Component[] }>("/api/inventory/components"),
+  list: (token: string) => request<{ data: Component[] }>("/api/inventory/components", { headers: authHeaders(token) }),
   create: (component: Component, token: string) => request<{ data: Component }>("/api/inventory/components", {
-    method: "POST", body: JSON.stringify(component), headers: { Authorization: `Bearer ${token}` },
+    method: "POST", body: JSON.stringify(component), headers: authHeaders(token),
   }),
   remove: (id: string, token: string) => request<void>(`/api/inventory/components/${id}`, {
-    method: "DELETE", headers: { Authorization: `Bearer ${token}` },
+    method: "DELETE", headers: authHeaders(token),
   }),
   import: (file: File, token: string) => request<{ data: { imported: number } }>("/api/inventory/import", {
     method: "POST",
     body: (() => { const form = new FormData(); form.append("file", file); return form; })(),
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(token),
   }),
   login: (username: string, password: string) => request<{ data: { token: string; role: string } }>("/api/auth/login", {
     method: "POST", body: JSON.stringify({ username, password }),
