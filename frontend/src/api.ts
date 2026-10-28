@@ -9,13 +9,9 @@ export interface Component {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const isFormData = options?.body instanceof FormData;
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: {
-      ...(isFormData ? {} : { "Content-Type": "application/json" }),
-      ...options?.headers,
-    },
+    headers: { "Content-Type": "application/json", ...options?.headers },
   });
   if (!response.ok) {
     if (response.status === 401) throw new Error("AUTH_REQUIRED");
@@ -35,11 +31,14 @@ export const inventoryApi = {
   remove: (id: string, token: string) => request<void>(`/api/inventory/components/${id}`, {
     method: "DELETE", headers: authHeaders(token),
   }),
+<<<<<<< HEAD
   import: (file: File, token: string) => request<{ data: { imported: number } }>("/api/inventory/import", {
     method: "POST",
     body: (() => { const form = new FormData(); form.append("file", file); return form; })(),
     headers: authHeaders(token),
   }),
+=======
+>>>>>>> parent of dc52a23 (feat(inventory): add Excel import functionality for components)
   login: (username: string, password: string) => request<{ data: { token: string; role: string } }>("/api/auth/login", {
     method: "POST", body: JSON.stringify({ username, password }),
   }),

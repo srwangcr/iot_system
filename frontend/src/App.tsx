@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Component, inventoryApi } from "./api";
 
 type Role = "admin" | "member";
@@ -89,6 +89,7 @@ export function App() {
     }
   }
 
+<<<<<<< HEAD
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -153,4 +154,27 @@ export function App() {
       </section>
     </main>
   );
+=======
+  return <main>
+    <header><div><span className="eyebrow">CLUB DE IoT</span><h1>Centro de inventario</h1></div><button className="secondary" onClick={() => void load()}>Actualizar</button></header>
+    {error && <div className="alert">{error}</div>}
+    <section className="stats">
+      <article><span>Componentes</span><strong>{components.length}</strong></article>
+      <article><span>Unidades totales</span><strong>{stats.total}</strong></article>
+      <article><span>Disponibles</span><strong>{stats.available}</strong></article>
+      <article><span>Stock bajo</span><strong>{stats.lowStock}</strong></article>
+    </section>
+    <section className="grid">
+      <div className="panel"><div className="panel-title"><h2>Componentes</h2><span>{components.length} registros</span></div>
+        <div className="table-wrap"><table><thead><tr><th>Componente</th><th>Categoría</th><th>Total</th><th>Disponible</th><th></th></tr></thead>
+          <tbody>{components.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.id}</small></td><td>{item.category}</td><td>{item.quantity}</td><td><span className={item.available <= 2 ? "badge warning" : "badge"}>{item.available}</span></td><td>{token && <button className="delete" onClick={() => void remove(item.id)}>Eliminar</button>}</td></tr>)}</tbody>
+        </table></div>
+      </div>
+      <aside>
+        {!token ? <form className="panel form" onSubmit={signIn}><h2>Acceso de encargado</h2><p>Inicia sesión para administrar el inventario.</p><input placeholder="Usuario" value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /><input type="password" placeholder="Contraseña" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /><button>Iniciar sesión</button></form> :
+          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><input required placeholder="ID (ej. arduino-uno)" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /><input required placeholder="Nombre" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /><div className="row"><input type="number" min="0" placeholder="Total" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /><input type="number" min="0" placeholder="Disponible" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></div><button>Guardar componente</button><button type="button" className="secondary" onClick={() => { localStorage.removeItem("iot-token"); setToken(""); }}>Cerrar sesión</button></form>}
+      </aside>
+    </section>
+  </main>;
+>>>>>>> parent of dc52a23 (feat(inventory): add Excel import functionality for components)
 }
