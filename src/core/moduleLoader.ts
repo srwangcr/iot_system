@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Express } from "express";
 import type { IModule, ModuleContext } from "./module.js";
@@ -39,6 +39,29 @@ function isModule(value: unknown): value is IModule {
   );
 }
 
+/**
+ * Resolves a manifest entry inside its module directory. During development the
+ * manifests point to the compiled `.js` name while the source file is `.ts`, so
+ * a `.ts` fallback is tried when the `.js` file does not exist. The resolved
+ * path is always verified to stay inside the module directory.
+ */
+function resolveModuleEntry(moduleDirectory: string, entry: string): string | undefined {
+  const candidate = resolve(moduleDirectory, entry);
+  const relativePath = relative(moduleDirectory, candidate);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return undefined;
+  }
+
+  const candidates = [candidate];
+  if (candidate.endsWith(".js")) candidates.push(`${candidate.slice(0, -3)}.ts`);
+
+  for (const path of candidates) {
+    const stats = statSync(path, { throwIfNoEntry: false });
+    if (stats?.isFile()) return path;
+  }
+  return undefined;
+}
+
 export async function loadModules(
   app: Express,
   modulesDirectory: string,
@@ -46,10 +69,13 @@ export async function loadModules(
 ): Promise<IModule[]> {
   const directory = resolve(modulesDirectory);
   const loadedModules: IModule[] = [];
+  const loadedNames = new Set<string>();
 
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+  const moduleDirectories = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .sort((left, right) => left.name.localeCompare(right.name));
 
+  for (const entry of moduleDirectories) {
     const moduleDirectory = join(directory, entry.name);
     const manifestPath = join(moduleDirectory, "manifest.json");
     let manifest: ModuleManifest;
@@ -65,14 +91,23 @@ export async function loadModules(
     if (!isModuleManifest(manifest)) {
       throw new Error(`Manifest for module "${entry.name}" must define name, version and entry`);
     }
+    if (loadedNames.has(manifest.name)) {
+      throw new Error(`Duplicate module name "${manifest.name}"`);
+    }
 
-    const entryPath = resolve(moduleDirectory, manifest.entry);
-    const entryStats = statSync(entryPath, { throwIfNoEntry: false });
-    if (!entryPath.startsWith(`${moduleDirectory}/`) || !entryStats?.isFile()) {
+    const entryPath = resolveModuleEntry(moduleDirectory, manifest.entry);
+    if (!entryPath) {
       throw new Error(`Entry "${manifest.entry}" for module "${manifest.name}" is invalid`);
     }
 
-    const implementation = await loadModuleExport(entryPath);
+    let implementation: unknown;
+    try {
+      implementation = await loadModuleExport(entryPath);
+    } catch (error) {
+      throw new Error(`Failed to load entry "${manifest.entry}" for module "${manifest.name}"`, {
+        cause: error,
+      });
+    }
     if (!isModule(implementation)) {
       throw new Error(`Module "${manifest.name}" does not implement IModule`);
     }
@@ -82,10 +117,11 @@ export async function loadModules(
 
     await implementation.registerRoutes(app, context);
     await implementation.registerHooks(context);
+    loadedNames.add(manifest.name);
     loadedModules.push(implementation);
   }
 
   return loadedModules;
 }
 
-export { isModuleManifest };
+export { isModuleManifest, resolveModuleEntry };

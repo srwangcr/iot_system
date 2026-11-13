@@ -1,18 +1,22 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Component, inventoryApi } from "./api";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type Component, inventoryApi } from "./api";
 
 type Role = "admin" | "member";
 
-const emptyForm = { id: "", name: "", category: "", quantity: 0, available: 0 };
+const emptyForm: Component = { id: "", name: "", category: "", quantity: 0, available: 0 };
+
+function readStoredRole(): Role {
+  return localStorage.getItem("iot-role") === "admin" ? "admin" : "member";
+}
 
 export function App() {
   const [components, setComponents] = useState<Component[]>([]);
   const [token, setToken] = useState(() => localStorage.getItem("iot-token") ?? "");
-  const [role, setRole] = useState<Role>(() => (localStorage.getItem("iot-role") as Role) ?? "member");
+  const [role, setRole] = useState<Role>(readStoredRole);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [login, setLogin] = useState({ username: "", password: "" });
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<Component>(emptyForm);
 
   const stats = useMemo(() => ({
     total: components.reduce((sum, item) => sum + item.quantity, 0),
@@ -37,20 +41,31 @@ export function App() {
     setRole("member");
     setComponents([]);
     setQuery("");
+    setForm(emptyForm);
+  }
+
+  function handleFailure(reason: unknown, fallback: string) {
+    if (reason instanceof Error && reason.message === "AUTH_REQUIRED") {
+      signOut();
+      setError("Tu sesión expiró. Inicia sesión de nuevo.");
+      return;
+    }
+    setError(reason instanceof Error ? reason.message : fallback);
   }
 
   async function load(currentToken = token) {
+    if (!currentToken) return;
     try {
       setComponents((await inventoryApi.list(currentToken)).data);
       setError("");
     } catch (reason) {
-      if (reason instanceof Error && reason.message === "AUTH_REQUIRED") signOut();
-      else setError(reason instanceof Error ? reason.message : "Error cargando inventario");
+      handleFailure(reason, "Error cargando inventario");
     }
   }
 
   useEffect(() => {
-    if (token) void load();
+    if (token) void load(token);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   async function signIn(event: FormEvent) {
@@ -59,11 +74,10 @@ export function App() {
       const result = await inventoryApi.login(login.username, login.password);
       localStorage.setItem("iot-token", result.data.token);
       localStorage.setItem("iot-role", result.data.role);
-      setToken(result.data.token);
-      setRole(result.data.role as Role);
+      setRole(result.data.role === "admin" ? "admin" : "member");
       setLogin({ username: "", password: "" });
       setError("");
-      await load(result.data.token);
+      setToken(result.data.token);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Credenciales inválidas");
     }
@@ -76,7 +90,7 @@ export function App() {
       setForm(emptyForm);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "No se pudo crear");
+      handleFailure(reason, "No se pudo crear el componente");
     }
   }
 
@@ -85,21 +99,7 @@ export function App() {
       await inventoryApi.remove(id, token);
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "No se pudo eliminar");
-    }
-  }
-
-<<<<<<< HEAD
-  async function importFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    try {
-      const result = await inventoryApi.import(file, token);
-      await load();
-      setError(`Importación completada: ${result.data.imported} filas procesadas.`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "No se pudo importar el Excel");
+      handleFailure(reason, "No se pudo eliminar el componente");
     }
   }
 
@@ -149,32 +149,9 @@ export function App() {
           </div>
         </div>
         {role === "admin" && <aside>
-          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><label className="file-label">Importar Excel (.xlsx/.xls)<input type="file" accept=".xlsx,.xls" onChange={(event) => void importFile(event)} /></label><label>ID<input required placeholder="ej. arduino-uno" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label><label>Nombre<input required placeholder="Nombre del componente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>Categoría<input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><div className="row"><label>Total<input type="number" min="0" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /></label><label>Disponible<input type="number" min="0" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></label></div><button>Guardar componente</button></form>
+          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><label>ID<input required placeholder="ej. arduino-uno" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label><label>Nombre<input required placeholder="Nombre del componente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>Categoría<input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><div className="row"><label>Total<input type="number" min="0" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /></label><label>Disponible<input type="number" min="0" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></label></div><button>Guardar componente</button></form>
         </aside>}
       </section>
     </main>
   );
-=======
-  return <main>
-    <header><div><span className="eyebrow">CLUB DE IoT</span><h1>Centro de inventario</h1></div><button className="secondary" onClick={() => void load()}>Actualizar</button></header>
-    {error && <div className="alert">{error}</div>}
-    <section className="stats">
-      <article><span>Componentes</span><strong>{components.length}</strong></article>
-      <article><span>Unidades totales</span><strong>{stats.total}</strong></article>
-      <article><span>Disponibles</span><strong>{stats.available}</strong></article>
-      <article><span>Stock bajo</span><strong>{stats.lowStock}</strong></article>
-    </section>
-    <section className="grid">
-      <div className="panel"><div className="panel-title"><h2>Componentes</h2><span>{components.length} registros</span></div>
-        <div className="table-wrap"><table><thead><tr><th>Componente</th><th>Categoría</th><th>Total</th><th>Disponible</th><th></th></tr></thead>
-          <tbody>{components.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.id}</small></td><td>{item.category}</td><td>{item.quantity}</td><td><span className={item.available <= 2 ? "badge warning" : "badge"}>{item.available}</span></td><td>{token && <button className="delete" onClick={() => void remove(item.id)}>Eliminar</button>}</td></tr>)}</tbody>
-        </table></div>
-      </div>
-      <aside>
-        {!token ? <form className="panel form" onSubmit={signIn}><h2>Acceso de encargado</h2><p>Inicia sesión para administrar el inventario.</p><input placeholder="Usuario" value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /><input type="password" placeholder="Contraseña" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} /><button>Iniciar sesión</button></form> :
-          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><input required placeholder="ID (ej. arduino-uno)" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /><input required placeholder="Nombre" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /><div className="row"><input type="number" min="0" placeholder="Total" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /><input type="number" min="0" placeholder="Disponible" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></div><button>Guardar componente</button><button type="button" className="secondary" onClick={() => { localStorage.removeItem("iot-token"); setToken(""); }}>Cerrar sesión</button></form>}
-      </aside>
-    </section>
-  </main>;
->>>>>>> parent of dc52a23 (feat(inventory): add Excel import functionality for components)
 }

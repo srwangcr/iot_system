@@ -1,10 +1,35 @@
 import { Pool } from "pg";
 import type { HardwareComponent } from "./types.js";
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+let pool: Pool | undefined;
+
+/**
+ * Creates the PostgreSQL pool lazily so the environment (including a local
+ * .env file) is fully loaded before the connection is configured. Tests can
+ * replace the pool through setPool().
+ */
+export function getPool(): Pool {
+  if (!pool) {
+    pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    pool.on("error", (error) => {
+      console.error("Unexpected PostgreSQL pool error", error);
+    });
+  }
+  return pool;
+}
+
+export function setPool(next: Pool | undefined): void {
+  pool = next;
+}
+
+export async function closePool(): Promise<void> {
+  const current = pool;
+  pool = undefined;
+  if (current) await current.end();
+}
 
 export async function initializeInventoryDatabase(): Promise<void> {
-  await pool.query(`
+  await getPool().query(`
     CREATE TABLE IF NOT EXISTS inventory_components (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -16,9 +41,9 @@ export async function initializeInventoryDatabase(): Promise<void> {
     )
   `);
 
-  const result = await pool.query("SELECT COUNT(*)::int AS count FROM inventory_components");
-  if (result.rows[0].count === 0) {
-    await pool.query(
+  const result = await getPool().query("SELECT COUNT(*)::int AS count FROM inventory_components");
+  if (Number(result.rows[0]?.count ?? 0) === 0) {
+    await getPool().query(
       `INSERT INTO inventory_components (id, name, category, quantity, available)
        VALUES
        ('esp32-devkit', 'ESP32 DevKit', 'microcontroller', 12, 8),
@@ -29,34 +54,37 @@ export async function initializeInventoryDatabase(): Promise<void> {
 }
 
 export async function findComponents(): Promise<HardwareComponent[]> {
-  const result = await pool.query(
+  const result = await getPool().query(
     "SELECT id, name, category, quantity, available FROM inventory_components ORDER BY name",
   );
-  return result.rows;
+  return result.rows as HardwareComponent[];
 }
 
 export async function createComponent(component: HardwareComponent): Promise<HardwareComponent> {
-  const result = await pool.query(
+  const result = await getPool().query(
     `INSERT INTO inventory_components (id, name, category, quantity, available)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, name, category, quantity, available`,
     [component.id, component.name, component.category, component.quantity, component.available],
   );
-  return result.rows[0];
+  return result.rows[0] as HardwareComponent;
 }
 
-export async function updateComponent(id: string, component: Omit<HardwareComponent, "id">): Promise<HardwareComponent | null> {
-  const result = await pool.query(
+export async function updateComponent(
+  id: string,
+  component: Omit<HardwareComponent, "id">,
+): Promise<HardwareComponent | null> {
+  const result = await getPool().query(
     `UPDATE inventory_components
      SET name = $1, category = $2, quantity = $3, available = $4, updated_at = NOW()
      WHERE id = $5
      RETURNING id, name, category, quantity, available`,
     [component.name, component.category, component.quantity, component.available, id],
   );
-  return result.rows[0] ?? null;
+  return (result.rows[0] as HardwareComponent | undefined) ?? null;
 }
 
 export async function deleteComponent(id: string): Promise<boolean> {
-  const result = await pool.query("DELETE FROM inventory_components WHERE id = $1", [id]);
+  const result = await getPool().query("DELETE FROM inventory_components WHERE id = $1", [id]);
   return result.rowCount === 1;
 }

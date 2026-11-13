@@ -29,6 +29,10 @@ function handleError(error: unknown, response: Response): void {
     response.status(409).json({ error: "A component with that id already exists" });
     return;
   }
+  if ((error as { code?: string }).code === "23514") {
+    response.status(400).json({ error: "Invalid component quantities" });
+    return;
+  }
   console.error(error);
   response.status(500).json({ error: "Internal server error" });
 }

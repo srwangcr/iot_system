@@ -1,37 +1,34 @@
 import type { NextFunction, Request, Response } from "express";
+import { findAccountByAuthorization, type Role } from "./accounts.js";
 
-export type Role = "admin" | "member";
+export type { Role } from "./accounts.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: { username: string; role: Role };
 }
 
-function findAuthenticatedRole(authorization: string | undefined): Role | undefined {
-  const accounts: Array<[Role, string | undefined]> = [
-    ["admin", process.env.AUTH_ADMIN_TOKEN],
-    ["member", process.env.AUTH_MEMBER_TOKEN],
-  ];
-  return accounts.find(([, token]) => token && authorization === `Bearer ${token}`)?.[0];
-}
-
 export function requireAuth(request: AuthenticatedRequest, response: Response, next: NextFunction): void {
-  const role = findAuthenticatedRole(request.header("authorization"));
-  if (!role) {
+  const account = findAccountByAuthorization(request.header("authorization"));
+  if (!account) {
     response.status(401).json({ error: "Authentication required" });
     return;
   }
-  request.user = { username: role, role };
+  request.user = { username: account.username, role: account.role };
   next();
 }
 
 export function requireRole(role: Role) {
   return (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
-    const authenticatedRole = findAuthenticatedRole(request.header("authorization"));
-    if (authenticatedRole !== role) {
+    const account = findAccountByAuthorization(request.header("authorization"));
+    if (!account) {
       response.status(401).json({ error: "Authentication required" });
       return;
     }
-    request.user = { username: role, role };
+    if (account.role !== role) {
+      response.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+    request.user = { username: account.username, role: account.role };
     next();
   };
 }

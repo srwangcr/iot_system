@@ -1,21 +1,33 @@
 import { Router } from "express";
-import { randomBytes } from "node:crypto";
+import { z } from "zod";
+import { getAccounts } from "./accounts.js";
+
+const loginSchema = z.object({
+  username: z.string().trim().min(1).max(120),
+  password: z.string().min(1).max(200),
+});
 
 export function createAuthRoutes(): Router {
   const router = Router();
+
   router.post("/login", (request, response) => {
-    const { username, password } = request.body as { username?: string; password?: string };
-    const accounts = [
-      { username: process.env.AUTH_ADMIN_USERNAME, password: process.env.AUTH_ADMIN_PASSWORD, role: "admin", token: process.env.AUTH_ADMIN_TOKEN },
-      { username: process.env.AUTH_MEMBER_USERNAME, password: process.env.AUTH_MEMBER_PASSWORD, role: "member", token: process.env.AUTH_MEMBER_TOKEN },
-    ];
-    const account = accounts.find((candidate) => candidate.username === username && candidate.password === password);
+    const parsed = loginSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: "Username and password are required" });
+      return;
+    }
+
+    const { username, password } = parsed.data;
+    const account = getAccounts().find(
+      (candidate) => candidate.username === username && candidate.password === password,
+    );
     if (!account) {
       response.status(401).json({ error: "Invalid credentials" });
       return;
     }
-    const token = account.token ?? randomBytes(32).toString("hex");
-    response.json({ data: { token, role: account.role } });
+
+    response.json({ data: { token: account.token, role: account.role, username: account.username } });
   });
+
   return router;
 }
