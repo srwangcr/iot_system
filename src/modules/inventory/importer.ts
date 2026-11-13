@@ -25,31 +25,33 @@ const rowSchema = z
     path: ["available"],
   });
 
-const headerAliases: Record<string, keyof HardwareComponent> = {
-  id: "id",
-  codigo: "id",
-  code: "id",
-  name: "name",
-  nombre: "name",
-  componente: "name",
-  category: "category",
-  categoria: "category",
-  quantity: "quantity",
-  cantidad: "quantity",
-  total: "quantity",
-  available: "available",
-  disponible: "available",
-  disponibles: "available",
-};
+type InventoryField = keyof HardwareComponent;
 
 const requiredFields = ["id", "name", "category", "quantity", "available"] as const;
+
+/**
+ * The club workbook uses "Valor-Serial" for the specific model/value and
+ * "Nombre" for the component type. When that column is present we treat
+ * "Nombre" as the category and "Valor-Serial" as the display name.
+ */
+const clubValueAliases = ["valor-serial", "valor-serial-", "valor", "serial", "modelo", "model"];
+
+const fieldAliases: Record<InventoryField, string[]> = {
+  id: ["id", "codigo", "code"],
+  name: ["name", "nombre", "componente"],
+  category: ["category", "categoria", "tipo"],
+  quantity: ["quantity", "cantidad", "total", "stock"],
+  available: ["available", "disponible", "disponibles"],
+};
 
 function normalizeHeader(value: unknown): string {
   return String(value ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function unwrapCellValue(value: unknown): unknown {
@@ -69,18 +71,121 @@ function unwrapCellValue(value: unknown): unknown {
   return value;
 }
 
-function normalizeValue(value: unknown, field: keyof HardwareComponent): string | number {
-  const unwrapped = unwrapCellValue(value);
-  if (field === "quantity" || field === "available") {
-    if (typeof unwrapped === "number" && Number.isInteger(unwrapped)) return unwrapped;
-    const parsed = Number(String(unwrapped ?? "").trim().replace(",", "."));
-    return Number.isInteger(parsed) ? parsed : Number.NaN;
-  }
-  return String(unwrapped ?? "").trim();
+function isPlaceholder(value: string): boolean {
+  const text = value.trim();
+  return text === "" || /^[-–—]+$/.test(text) || /^(n\/?a|sin dato|s\/d)$/i.test(text);
 }
 
-function isEmptyRow(values: unknown[]): boolean {
-  return values.slice(1).every((value) => String(unwrapCellValue(value) ?? "").trim() === "");
+function normalizeCount(value: unknown, lenient: boolean): number {
+  const unwrapped = unwrapCellValue(value);
+  if (typeof unwrapped === "number") {
+    return Number.isInteger(unwrapped) ? unwrapped : Number.NaN;
+  }
+
+  const text = String(unwrapped ?? "").trim();
+  if (text === "") return lenient ? 0 : Number.NaN;
+  if (isPlaceholder(text)) return lenient ? 0 : Number.NaN;
+
+  const parsed = Number(text.replace(",", "."));
+  return Number.isInteger(parsed) ? parsed : Number.NaN;
+}
+
+function normalizeText(value: unknown): string {
+  return String(unwrapCellValue(value) ?? "").trim();
+}
+
+function normalizeClubId(value: unknown): string {
+  return normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+interface ColumnMapping {
+  columnMap: Map<number, InventoryField>;
+  clubLayout: boolean;
+}
+
+function buildColumnMapping(headerRow: unknown[]): {
+  mapping: ColumnMapping;
+  missing: InventoryField[];
+} {
+  const columns: Array<{ index: number; key: string }> = [];
+  headerRow.forEach((value, index) => {
+    if (index === 0) return;
+    const key = normalizeHeader(value);
+    if (key) columns.push({ index, key });
+  });
+
+  const headerKeys = new Set(columns.map((column) => column.key));
+  const clubLayout = clubValueAliases.some((alias) => headerKeys.has(alias));
+
+  const columnMap = new Map<number, InventoryField>();
+  const usedColumns = new Set<number>();
+
+  function assign(field: InventoryField, aliases: string[]): void {
+    for (const alias of aliases) {
+      const column = columns.find((candidate) => candidate.key === alias && !usedColumns.has(candidate.index));
+      if (column) {
+        usedColumns.add(column.index);
+        columnMap.set(column.index, field);
+        return;
+      }
+    }
+  }
+
+  assign("id", fieldAliases.id);
+  assign(
+    "name",
+    clubLayout
+      ? [...clubValueAliases, "name", "componente"]
+      : fieldAliases.name,
+  );
+  assign(
+    "category",
+    clubLayout
+      ? [...fieldAliases.category, "nombre"]
+      : fieldAliases.category,
+  );
+  assign("quantity", fieldAliases.quantity);
+  assign("available", fieldAliases.available);
+
+  const mappedFields = new Set(columnMap.values());
+  const missing = requiredFields.filter((field) => !mappedFields.has(field));
+  return { mapping: { columnMap, clubLayout }, missing };
+}
+
+interface SheetLayout extends ColumnMapping {
+  worksheet: ExcelJS.Worksheet;
+}
+
+function resolveSheetLayout(workbook: ExcelJS.Workbook): SheetLayout {
+  let firstMissing: InventoryField[] | undefined;
+
+  for (const worksheet of workbook.worksheets) {
+    if (worksheet.rowCount < 1) continue;
+    const headerRow = worksheet.getRow(1).values as unknown[];
+    const { mapping, missing } = buildColumnMapping(headerRow);
+    if (missing.length === 0) return { worksheet, ...mapping };
+    firstMissing ??= missing;
+  }
+
+  if (firstMissing) {
+    throw new InventoryImportError(`Missing required columns: ${firstMissing.join(", ")}`);
+  }
+  throw new InventoryImportError("The workbook does not contain a sheet");
+}
+
+function isEmptyRow(values: unknown[], columnMap: Map<number, InventoryField>): boolean {
+  const textFields = new Set<InventoryField>(["id", "name", "category"]);
+  for (const [index, field] of columnMap) {
+    if (!textFields.has(field)) continue;
+    if (normalizeText(values[index]) !== "") return false;
+  }
+  return true;
 }
 
 export async function importInventoryWorkbook(
@@ -98,30 +203,13 @@ export async function importInventoryWorkbook(
     throw new InventoryImportError("The uploaded file is not a valid .xlsx workbook");
   }
 
-  const worksheet = workbook.worksheets[0];
-  if (!worksheet || worksheet.rowCount < 1) {
-    throw new InventoryImportError("The workbook does not contain a sheet");
-  }
-
-  const headerRow = worksheet.getRow(1).values as unknown[];
-  const columnMap = new Map<number, keyof HardwareComponent>();
-  headerRow.forEach((value, index) => {
-    if (index === 0) return;
-    const field = headerAliases[normalizeHeader(value)];
-    if (field) columnMap.set(index, field);
-  });
-
-  const mappedFields = new Set(columnMap.values());
-  const missing = requiredFields.filter((field) => !mappedFields.has(field));
-  if (missing.length > 0) {
-    throw new InventoryImportError(`Missing required columns: ${missing.join(", ")}`);
-  }
+  const { worksheet, columnMap, clubLayout } = resolveSheetLayout(workbook);
 
   const rows: Array<{ rowNumber: number; values: unknown[] }> = [];
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     if (rowNumber === 1) return;
     const values = row.values as unknown[];
-    if (isEmptyRow(values)) return;
+    if (isEmptyRow(values, columnMap)) return;
     rows.push({ rowNumber, values });
   });
 
@@ -133,9 +221,21 @@ export async function importInventoryWorkbook(
   const ids = new Set<string>();
 
   for (const { rowNumber, values } of rows) {
-    const raw = {} as Record<keyof HardwareComponent, string | number>;
+    const raw = {} as Record<InventoryField, string | number>;
+
     for (const [columnIndex, field] of columnMap) {
-      raw[field] = normalizeValue(values[columnIndex], field);
+      if (field === "quantity" || field === "available") {
+        raw[field] = normalizeCount(values[columnIndex], clubLayout);
+      } else {
+        raw[field] = normalizeText(values[columnIndex]);
+      }
+    }
+
+    if (clubLayout) {
+      raw.id = normalizeClubId(raw.id);
+      const category = normalizeText(raw.category);
+      const value = normalizeText(raw.name);
+      if (category && isPlaceholder(value)) raw.name = category;
     }
 
     const parsed = rowSchema.safeParse(raw);

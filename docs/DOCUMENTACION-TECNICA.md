@@ -2,7 +2,7 @@
 
 **Versión del documento:** 1.1  
 **Última actualización:** 13 de noviembre de 2026  
-**Estado:** proyecto compilando, 23 pruebas automatizadas en verde y flujo end-to-end (39 comprobaciones) validado contra PostgreSQL 16 real.
+**Estado:** proyecto compilando, 24 pruebas automatizadas en verde y flujo end-to-end (39 comprobaciones) validado contra PostgreSQL 16 real.
 
 ---
 
@@ -418,13 +418,18 @@ Flujo:
 
 1. `multer` recibe un único archivo en memoria (campo `file`), máximo **10 MB** y extensión `.xlsx`.
 2. `ExcelJS` carga el workbook; si falla, se devuelve `400`.
-3. Se lee la primera fila como cabecera y se mapean alias ES/EN (`id/codigo/code`, `name/nombre/componente`, etc.).
-4. Se exigen las cinco columnas obligatorias; si falta alguna, se rechaza el archivo.
-5. Se recorren las filas no vacías (máximo **5000**), se normalizan números y se validan con Zod (incluida la regla `available <= quantity` y la ausencia de `id` duplicados).
-6. `upsertComponents()` ejecuta `INSERT ... ON CONFLICT (id) DO UPDATE` dentro de una transacción (`BEGIN`/`COMMIT`/`ROLLBACK`).
-7. La respuesta es `200 { data: { imported, components } }`.
+3. Se recorre cada hoja hasta encontrar una con las cinco columnas obligatorias.
+4. Se detecta el formato:
 
-Cualquier fila inválida cancela la importación completa e informa el número de fila; no se aplican cambios parciales.
+   - **Simple:** `id`, `name`, `category`, `quantity`, `available` (con alias ES/EN).
+   - **Inventario del club:** `ID`, `Nombre`, `Valor-Serial`, `Cantidad`, `Disponible`. En este caso `Nombre` se usa como categoría y `Valor-Serial` como nombre; `Ubicación`, `Ubicación H` y `Ubicación V` se leen pero no se persisten.
+
+5. Se recorren las filas no vacías (máximo **5000**). En el formato del club, celdas como `--` en cantidades se interpretan como `0` y las filas sin texto se omiten.
+6. Se normalizan números y se validan con Zod (incluida la regla `available <= quantity` y la ausencia de `id` duplicados).
+7. `upsertComponents()` ejecuta `INSERT ... ON CONFLICT (id) DO UPDATE` dentro de una transacción (`BEGIN`/`COMMIT`/`ROLLBACK`).
+8. La respuesta es `200 { data: { imported, components } }`.
+
+Cualquier fila inválida cancela la importación completa e informa el número de fila; no se aplican cambios parciales. El formato del club se validó con el archivo real `inventario.xlsx` (131 componentes importados).
 
 ---
 
@@ -673,7 +678,7 @@ AUTH_ADMIN_* / AUTH_MEMBER_*
 npm test
 ```
 
-Ejecuta `node --import tsx --test test/*.test.ts` (actualmente 23 pruebas).
+Ejecuta `node --import tsx --test test/*.test.ts` (actualmente 24 pruebas).
 
 ### 11.2 Unitarias (`test/unit.test.ts`)
 
@@ -705,7 +710,7 @@ Casos cubiertos:
 7. Inventario: validación de cantidades/ids, `201`, `409`, `200`, `404`, `204`.
 8. Grupos: seed, `201`, duplicado `409`, `400` de validación, `PUT`, borrado `204` y `409` si tiene proyectos (`FK`).
 9. Proyectos: seed, `201`, `400` por grupo inexistente (`FK`) y fechas inválidas, `PUT`, `204`/`404`.
-10. Importación Excel: `403` para member, *upsert* de filas nuevas y existentes, reimportación idempotente, columnas faltantes, fila inválida, extensión `.csv`, archivo ausente.
+10. Importación Excel: `403` para member, *upsert* de filas nuevas y existentes, reimportación idempotente, formato simple, formato del club (`ID/Nombre/Valor-Serial/Cantidad/Disponible`) con celdas `--` y filas vacías, columnas faltantes, fila inválida, extensión `.csv`, archivo ausente.
 11. JSON malformado `400` y ruta inexistente `404`.
 
 ### 11.4 Validación manual con PostgreSQL real
@@ -717,8 +722,9 @@ Además de la suite automatizada se ejecutó:
 3. `node dist/server.js` con variables reales.
 4. **39 comprobaciones HTTP**: health, CORS, login, roles, CRUD de inventario/grupos/proyectos, validaciones, duplicados, restricciones `FK` y errores `404`.
 5. Importación Excel real: creación/actualización de componentes, reimportación idempotente y rechazo de archivos/filas inválidas.
-6. Persistencia: creación de grupo, proyecto y componente importado, `SIGTERM`, reinicio y verificación de que los datos seguían ahí y los seeds no se duplicaron.
-7. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
+6. Importación del archivo real `inventario.xlsx` (formato del club): **131 componentes** cargados, incluidas filas con `--` en cantidad y una fila vacía ignorada; reimportación idempotente.
+7. Persistencia: creación de grupo, proyecto y componente importado, `SIGTERM`, reinicio y verificación de que los datos seguían ahí y los seeds no se duplicaron.
+8. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
 
 Resultado: **todo en verde**.
 

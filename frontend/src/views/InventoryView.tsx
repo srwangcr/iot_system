@@ -104,7 +104,7 @@ export function InventoryView({
         {role === "admin" && <aside>
           <form className="panel form" onSubmit={add}>
             <h2>Agregar componente</h2>
-            <label className="file-label">Importar Excel (.xlsx)<input type="file" accept=".xlsx" disabled={importing} onChange={(event) => void importFile(event)} /><small>{importing ? "Importando..." : "Columnas: id, name, category, quantity, available (también en español)."}</small></label>
+            <label className="file-label">Importar Excel (.xlsx)<input type="file" accept=".xlsx" disabled={importing} onChange={(event) => void importFile(event)} /><small>{importing ? "Importando..." : "Formatos: id/name/category/quantity/available o ID/Nombre/Valor-Serial/Cantidad/Disponible."}</small></label>
             <label>ID<input required placeholder="ej. arduino-uno" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label>
             <label>Nombre<input required placeholder="Nombre del componente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
             <label>Categoría<input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label>

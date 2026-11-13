@@ -531,6 +531,78 @@ test("API end-to-end", async (t) => {
       });
     });
 
+    await t.test("admins can import the club inventory layout", async () => {
+      const buffer = await workbookBuffer([
+        [
+          "ID",
+          "Nombre",
+          "Valor-Serial",
+          "Ubicación",
+          "Ubicación H",
+          "Ubicación V",
+          "Cantidad",
+          "Disponible",
+        ],
+        [9001, "Resistencia", "1k", "A5", "A", 5, 20, 18],
+        [9002, "Pinzas Caiman", "---", "A1", "A", 1, "--", "--"],
+        [" "],
+      ]);
+
+      const imported = await api("/api/inventory/import", {
+        method: "POST",
+        headers: adminAuth,
+        body: workbookForm(buffer),
+      });
+      assert.equal(imported.response.status, 200);
+      assert.equal((imported.body.data as { imported: number }).imported, 2);
+
+      const importedComponents = (imported.body.data as {
+        components: Array<{
+          id: string;
+          name: string;
+          category: string;
+          quantity: number;
+          available: number;
+        }>;
+      }).components;
+      const resistor = importedComponents.find((component) => component.id === "9001");
+      assert.deepEqual(resistor, {
+        id: "9001",
+        name: "1k",
+        category: "Resistencia",
+        quantity: 20,
+        available: 18,
+      });
+      const pliers = importedComponents.find((component) => component.id === "9002");
+      assert.deepEqual(pliers, {
+        id: "9002",
+        name: "Pinzas Caiman",
+        category: "Pinzas Caiman",
+        quantity: 0,
+        available: 0,
+      });
+
+      const reimported = await api("/api/inventory/import", {
+        method: "POST",
+        headers: adminAuth,
+        body: workbookForm(buffer),
+      });
+      assert.equal(reimported.response.status, 200);
+      assert.equal((reimported.body.data as { imported: number }).imported, 2);
+
+      const list = await api("/api/inventory/components", { headers: memberHeaders });
+      const items = list.body.data as Array<{ id: string }>;
+      assert.equal(items.filter((item) => item.id === "9001").length, 1);
+      assert.equal(items.filter((item) => item.id === "9002").length, 1);
+
+      for (const id of ["9001", "9002"]) {
+        await api(`/api/inventory/components/${id}`, {
+          method: "DELETE",
+          headers: adminHeaders,
+        });
+      }
+    });
+
     await t.test("Excel import rejects invalid files and rows", async () => {
       const missingColumns = await workbookBuffer([
         ["foo", "bar"],

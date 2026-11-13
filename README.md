@@ -269,12 +269,31 @@ curl -X POST http://localhost:3000/api/projects \
 Formato del Excel de importación:
 
 - Solo se aceptan archivos `.xlsx` de hasta **10 MB** y un máximo de **5000 filas**.
-- La primera fila debe contener cabeceras. Se aceptan alias en español e inglés:
-  - `id` / `codigo` / `code`
-  - `name` / `nombre` / `componente`
-  - `category` / `categoria`
-  - `quantity` / `cantidad` / `total`
-  - `available` / `disponible` / `disponibles`
+- La primera fila debe contener cabeceras. Se soportan dos formatos:
+
+**Formato simple**
+
+| Columna | Alias aceptados |
+| ------- | --------------- |
+| `id` | `id`, `codigo`, `code` |
+| `name` | `name`, `nombre`, `componente` |
+| `category` | `category`, `categoria` |
+| `quantity` | `quantity`, `cantidad`, `total`, `stock` |
+| `available` | `available`, `disponible`, `disponibles` |
+
+**Formato de inventario del club** (como `inventario.xlsx`)
+
+| Columna del Excel | Campo importado |
+| ----------------- | --------------- |
+| `ID` | `id` (se normaliza a minúsculas/guiones) |
+| `Nombre` | `category` |
+| `Valor-Serial` | `name` (si es `--`, `---` o similar, se usa `Nombre`) |
+| `Cantidad` | `quantity` |
+| `Disponible` | `available` |
+
+- Las columnas `Ubicación`, `Ubicación H` y `Ubicación V` se leen pero no se almacenan porque el modelo actual no tiene campos de ubicación.
+- En el formato del club, cantidades no numéricas como `--` se importan como `0`.
+- Las filas totalmente vacías se ignoran.
 - La importación es un *upsert* por `id` dentro de una transacción: crea filas nuevas y actualiza las existentes.
 - Si una fila es inválida, se rechaza el archivo completo y se indica el número de fila.
 
@@ -395,7 +414,7 @@ Si una tabla está vacía, se insertan datos de ejemplo:
 npm test
 ```
 
-Cobertura actual (23 pruebas):
+Cobertura actual (24 pruebas):
 
 - **Unitarias**
   - Validación de manifiestos de módulos.
@@ -410,7 +429,7 @@ Cobertura actual (23 pruebas):
   - Inventario: datos semilla, creación, duplicados, actualización, borrado y `404`.
   - Grupos: datos semilla, CRUD, validación y bloqueo de borrado con proyectos (`FK`).
   - Proyectos: datos semilla, CRUD, validación de fechas y de grupo existente (`FK`).
-  - Importación Excel: permisos, *upsert* idempotente, columnas faltantes, filas inválidas, extensión incorrecta y archivo ausente.
+  - Importación Excel: permisos, *upsert* idempotente, formato simple, formato del club (`ID/Nombre/Valor-Serial/Cantidad/Disponible`), columnas faltantes, filas inválidas, extensión incorrecta y archivo ausente.
   - JSON malformado y rutas inexistentes.
 
 Además se validó manualmente el flujo completo con:
@@ -418,6 +437,7 @@ Además se validó manualmente el flujo completo con:
 - `npm run build` + `node dist/server.js`.
 - Una instancia **real de PostgreSQL 16**.
 - 39 comprobaciones end-to-end: login, CRUD, roles, grupos, proyectos, restricciones `FK`, importación Excel, CORS, persistencia tras reinicio y apagado con `SIGTERM`.
+- Importación del archivo real `inventario.xlsx`: **131 componentes** cargados, reimportación idempotente y verificación de filas con cantidad `--`.
 - `npm run dev` con carga automática de `.env` y resolución de módulos `.ts`.
 
 ---
