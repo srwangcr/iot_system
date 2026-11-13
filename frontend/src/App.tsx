@@ -1,9 +1,18 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { type Component, inventoryApi } from "./api";
+import {
+  type Component,
+  type Group,
+  type Project,
+  type Role,
+  groupsApi,
+  inventoryApi,
+  projectsApi,
+} from "./api";
+import { InventoryView } from "./views/InventoryView";
+import { GroupsView } from "./views/GroupsView";
+import { ProjectsView } from "./views/ProjectsView";
 
-type Role = "admin" | "member";
-
-const emptyForm: Component = { id: "", name: "", category: "", quantity: 0, available: 0 };
+type View = "inventory" | "groups" | "projects";
 
 function readStoredRole(): Role {
   return localStorage.getItem("iot-role") === "admin" ? "admin" : "member";
@@ -11,28 +20,20 @@ function readStoredRole(): Role {
 
 export function App() {
   const [components, setComponents] = useState<Component[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [token, setToken] = useState(() => localStorage.getItem("iot-token") ?? "");
   const [role, setRole] = useState<Role>(readStoredRole);
+  const [view, setView] = useState<View>("inventory");
   const [error, setError] = useState("");
-  const [query, setQuery] = useState("");
+  const [notice, setNotice] = useState("");
   const [login, setLogin] = useState({ username: "", password: "" });
-  const [form, setForm] = useState<Component>(emptyForm);
 
-  const stats = useMemo(() => ({
-    total: components.reduce((sum, item) => sum + item.quantity, 0),
-    available: components.reduce((sum, item) => sum + item.available, 0),
-    lowStock: components.filter((item) => item.available <= 2).length,
-  }), [components]);
-
-  const filteredComponents = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return components;
-    return components.filter((item) =>
-      [item.id, item.name, item.category].some((value) =>
-        value.toLocaleLowerCase().includes(normalizedQuery),
-      ),
-    );
-  }, [components, query]);
+  const counts = useMemo(() => ({
+    inventory: components.length,
+    groups: groups.length,
+    projects: projects.length,
+  }), [components.length, groups.length, projects.length]);
 
   function signOut() {
     localStorage.removeItem("iot-token");
@@ -40,11 +41,13 @@ export function App() {
     setToken("");
     setRole("member");
     setComponents([]);
-    setQuery("");
-    setForm(emptyForm);
+    setGroups([]);
+    setProjects([]);
+    setView("inventory");
   }
 
   function handleFailure(reason: unknown, fallback: string) {
+    setNotice("");
     if (reason instanceof Error && reason.message === "AUTH_REQUIRED") {
       signOut();
       setError("Tu sesión expiró. Inicia sesión de nuevo.");
@@ -53,18 +56,30 @@ export function App() {
     setError(reason instanceof Error ? reason.message : fallback);
   }
 
-  async function load(currentToken = token) {
+  function showNotice(message: string) {
+    setError("");
+    setNotice(message);
+  }
+
+  async function loadAll(currentToken = token) {
     if (!currentToken) return;
     try {
-      setComponents((await inventoryApi.list(currentToken)).data);
+      const [inventoryResult, groupsResult, projectsResult] = await Promise.all([
+        inventoryApi.list(currentToken),
+        groupsApi.list(currentToken),
+        projectsApi.list(currentToken),
+      ]);
+      setComponents(inventoryResult.data);
+      setGroups(groupsResult.data);
+      setProjects(projectsResult.data);
       setError("");
     } catch (reason) {
-      handleFailure(reason, "Error cargando inventario");
+      handleFailure(reason, "Error cargando los datos del club");
     }
   }
 
   useEffect(() => {
-    if (token) void load(token);
+    if (token) void loadAll(token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -77,30 +92,17 @@ export function App() {
       setRole(result.data.role === "admin" ? "admin" : "member");
       setLogin({ username: "", password: "" });
       setError("");
+      setNotice("");
       setToken(result.data.token);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Credenciales inválidas");
     }
   }
 
-  async function add(event: FormEvent) {
-    event.preventDefault();
-    try {
-      await inventoryApi.create(form, token);
-      setForm(emptyForm);
-      await load();
-    } catch (reason) {
-      handleFailure(reason, "No se pudo crear el componente");
-    }
-  }
-
-  async function remove(id: string) {
-    try {
-      await inventoryApi.remove(id, token);
-      await load();
-    } catch (reason) {
-      handleFailure(reason, "No se pudo eliminar el componente");
-    }
+  function openView(nextView: View) {
+    setView(nextView);
+    setError("");
+    setNotice("");
   }
 
   if (!token) {
@@ -108,8 +110,8 @@ export function App() {
       <main className="auth-page">
         <section className="auth-card">
           <span className="eyebrow">CLUB DE IoT</span>
-          <h1>Centro de inventario</h1>
-          <p>Inicia sesión para consultar y administrar los componentes del club.</p>
+          <h1>Centro de gestión</h1>
+          <p>Inicia sesión para consultar el inventario, los grupos y los proyectos del club.</p>
           {error && <div className="alert">{error}</div>}
           <form className="form" onSubmit={signIn}>
             <label>Usuario<input required autoComplete="username" placeholder="Tu usuario" value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} /></label>
@@ -124,34 +126,50 @@ export function App() {
   return (
     <main>
       <header>
-        <div><span className="eyebrow">CLUB DE IoT</span><h1>Centro de inventario</h1></div>
-        <div className="header-actions"><span className="user-role">{role === "admin" ? "Administrador" : "Miembro"}</span><button className="secondary" onClick={() => void load()}>Actualizar</button><button className="secondary" onClick={signOut}>Cerrar sesión</button></div>
+        <div><span className="eyebrow">CLUB DE IoT</span><h1>Centro de gestión</h1></div>
+        <div className="header-actions"><span className="user-role">{role === "admin" ? "Administrador" : "Miembro"}</span><button className="secondary" onClick={() => void loadAll()}>Actualizar</button><button className="secondary" onClick={signOut}>Cerrar sesión</button></div>
       </header>
+
+      <nav className="tabs" aria-label="Secciones">
+        <button className={view === "inventory" ? "tab active" : "tab"} onClick={() => openView("inventory")}>Inventario <span>{counts.inventory}</span></button>
+        <button className={view === "groups" ? "tab active" : "tab"} onClick={() => openView("groups")}>Grupos <span>{counts.groups}</span></button>
+        <button className={view === "projects" ? "tab active" : "tab"} onClick={() => openView("projects")}>Proyectos <span>{counts.projects}</span></button>
+      </nav>
+
       {error && <div className="alert">{error}</div>}
-      <section className="stats">
-        <article><span>Componentes</span><strong>{components.length}</strong></article>
-        <article><span>Unidades totales</span><strong>{stats.total}</strong></article>
-        <article><span>Disponibles</span><strong>{stats.available}</strong></article>
-        <article><span>Stock bajo</span><strong>{stats.lowStock}</strong></article>
-      </section>
-      <section className="grid">
-        <div className="panel inventory-panel">
-          <div className="panel-title"><div><h2>Componentes</h2><span>{filteredComponents.length} de {components.length} registros</span></div></div>
-          <div className="search-bar">
-            <label htmlFor="component-search">Buscar componentes</label>
-            <div className="search-controls"><input id="component-search" type="search" placeholder="Buscar por ID, nombre o categoría..." value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button className="secondary" onClick={() => setQuery("")}>Limpiar</button>}</div>
-          </div>
-          <div className="table-wrap">
-            <table><thead><tr><th>Componente</th><th>Categoría</th><th>Total</th><th>Disponible</th>{role === "admin" && <th>Acciones</th>}</tr></thead>
-              <tbody>{filteredComponents.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.id}</small></td><td>{item.category}</td><td>{item.quantity}</td><td><span className={item.available <= 2 ? "badge warning" : "badge"}>{item.available}</span></td>{role === "admin" && <td><button className="delete" onClick={() => void remove(item.id)}>Eliminar</button></td>}</tr>)}</tbody>
-            </table>
-            {!filteredComponents.length && <div className="empty-state"><strong>No encontramos componentes</strong><span>Prueba con otro término de búsqueda.</span></div>}
-          </div>
-        </div>
-        {role === "admin" && <aside>
-          <form className="panel form" onSubmit={add}><h2>Agregar componente</h2><label>ID<input required placeholder="ej. arduino-uno" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} /></label><label>Nombre<input required placeholder="Nombre del componente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>Categoría<input required placeholder="Categoría" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></label><div className="row"><label>Total<input type="number" min="0" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} /></label><label>Disponible<input type="number" min="0" value={form.available} onChange={(event) => setForm({ ...form, available: Number(event.target.value) })} /></label></div><button>Guardar componente</button></form>
-        </aside>}
-      </section>
+      {notice && <div className="notice">{notice}</div>}
+
+      {view === "inventory" && (
+        <InventoryView
+          components={components}
+          role={role}
+          token={token}
+          onRefresh={loadAll}
+          onError={handleFailure}
+          onNotice={showNotice}
+        />
+      )}
+      {view === "groups" && (
+        <GroupsView
+          groups={groups}
+          role={role}
+          token={token}
+          onRefresh={loadAll}
+          onError={handleFailure}
+          onNotice={showNotice}
+        />
+      )}
+      {view === "projects" && (
+        <ProjectsView
+          projects={projects}
+          groups={groups}
+          role={role}
+          token={token}
+          onRefresh={loadAll}
+          onError={handleFailure}
+          onNotice={showNotice}
+        />
+      )}
     </main>
   );
 }

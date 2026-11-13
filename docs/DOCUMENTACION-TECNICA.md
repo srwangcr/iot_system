@@ -1,8 +1,8 @@
 # Documentación técnica — IoT Club Management
 
-**Versión del documento:** 1.0  
+**Versión del documento:** 1.1  
 **Última actualización:** 13 de noviembre de 2026  
-**Estado:** proyecto compilando, 17 pruebas automatizadas en verde y flujo end-to-end validado contra PostgreSQL 16 real.
+**Estado:** proyecto compilando, 23 pruebas automatizadas en verde y flujo end-to-end (39 comprobaciones) validado contra PostgreSQL 16 real.
 
 ---
 
@@ -13,7 +13,7 @@
 3. [Ciclo de vida del backend](#3-ciclo-de-vida-del-backend)
 4. [Sistema de módulos](#4-sistema-de-módulos)
 5. [Autenticación y autorización](#5-autenticación-y-autorización)
-6. [Dominio de inventario](#6-dominio-de-inventario)
+6. [Dominios de negocio](#6-dominios-de-negocio)
 7. [Capa HTTP y manejo de errores](#7-capa-http-y-manejo-de-errores)
 8. [Base de datos](#8-base-de-datos)
 9. [Frontend](#9-frontend)
@@ -28,7 +28,7 @@
 
 ## 1. Visión general
 
-El sistema administra el inventario de hardware de un club de IoT. Está compuesto por:
+El sistema administra el inventario de hardware, los grupos de trabajo y los proyectos de un club de IoT, e incluye importación de inventario desde Excel. Está compuesto por:
 
 - **API REST** en Node.js, Express 4, TypeScript en modo estricto y módulos ESM.
 - **PostgreSQL 16** como almacenamiento transaccional.
@@ -70,15 +70,22 @@ El sistema administra el inventario de hardware de un club de IoT. Está compues
 │            ├────────────────────────────────────────────────┤        │
 │            │ modules/inventory                              │        │
 │            │   /api/inventory/components [GET/POST/PUT/DEL]  │        │
-│            │   controller.ts (Zod)                          │        │
-│            │   database.ts (pg Pool)                        │        │
-│            └─────────────────────────────┬──────────────────┘        │
-└──────────────────────────────────────────┼─────────────────────────────┘
-                                           │ SQL parametrizado
-                                ┌──────────▼───────────┐
-                                │ PostgreSQL 16        │
-                                │ inventory_components │
-                                └──────────────────────┘
+│            │   /api/inventory/import [POST]                 │        │
+│            │   controller.ts + importer.ts (Zod/ExcelJS)    │        │
+│            ├────────────────────────────────────────────────┤        │
+│            │ modules/groups                                 │        │
+│            │   /api/groups [GET/POST/PUT/DEL]               │        │
+│            ├────────────────────────────────────────────────┤        │
+│            │ modules/projects                               │        │
+│            │   /api/projects [GET/POST/PUT/DEL]             │        │
+│            └─────────────┬──────────────────────────────────┘        │
+└──────────────────────────┼───────────────────────────────────────────┘
+                           │ SQL parametrizado
+                 ┌─────────▼────────────┐
+                 │ PostgreSQL 16        │
+                 │ inventory_components │
+                 │ groups / projects    │
+                 └──────────────────────┘
 ```
 
 ### 2.2 Estructura de carpetas
@@ -88,6 +95,8 @@ src/
 ├── app.ts                         # createApp(): middlewares + módulos
 ├── server.ts                      # .env, listen, señales, cierre del pool
 ├── core/
+│   ├── database.ts                # Pool PostgreSQL perezoso (getPool/setPool/closePool)
+│   ├── databaseErrors.ts          # Detección de unique/FK/check violations
 │   ├── module.ts                  # IModule, ModuleContext
 │   └── moduleLoader.ts            # Descubrimiento, validación, import dinámico
 └── modules/
@@ -97,13 +106,28 @@ src/
     │   ├── manifest.json
     │   ├── middleware.ts          # requireAuth, requireRole
     │   └── routes.ts              # POST /login
-    └── inventory/
-        ├── controller.ts          # Handlers HTTP + esquemas Zod
-        ├── database.ts            # Pool perezoso + consultas SQL
-        ├── index.ts               # Implementación de IModule
+    ├── inventory/
+    │   ├── controller.ts          # Handlers HTTP + esquemas Zod
+    │   ├── database.ts            # Consultas SQL + upsert transaccional
+    │   ├── importer.ts            # Lectura/validación del workbook .xlsx
+    │   ├── index.ts               # Implementación de IModule
+    │   ├── manifest.json
+    │   ├── routes.ts              # Rutas protegidas + multer
+    │   └── types.ts               # HardwareComponent
+    ├── groups/
+    │   ├── controller.ts          # CRUD + validación Zod
+    │   ├── database.ts            # Tabla groups + seed
+    │   ├── index.ts
+    │   ├── manifest.json
+    │   ├── routes.ts
+    │   └── types.ts               # Group, GroupStatus
+    └── projects/
+        ├── controller.ts          # CRUD + validación Zod
+        ├── database.ts            # Tabla projects + FK a groups
+        ├── index.ts
         ├── manifest.json
-        ├── routes.ts              # Rutas protegidas
-        └── types.ts               # HardwareComponent
+        ├── routes.ts
+        └── types.ts               # Project, ProjectStatus
 ```
 
 ---
@@ -205,7 +229,9 @@ Esto corrige el fallo que impedía ejecutar `npm run dev`.
 Los directorios se ordenan alfabéticamente antes de cargar. En este proyecto:
 
 1. `auth` — registra `/api/auth`, valida configuración.
-2. `inventory` — registra rutas de inventario, inicializa la tabla y el seed.
+2. `groups` — registra `/api/groups`, inicializa la tabla y el seed.
+3. `inventory` — registra rutas de inventario e importación, inicializa la tabla y el seed.
+4. `projects` — registra `/api/projects`, inicializa la tabla (depende de `groups`) y el seed.
 
 ### 4.5 Añadir un módulo
 
@@ -266,14 +292,17 @@ El parseo del header acepta `Bearer <token>` sin distinguir mayúsculas en el es
 
 ### 5.5 Matriz de permisos
 
-| Operación                          | Anónimo | member | admin |
-| ---------------------------------- | ------- | ------ | ----- |
-| `POST /api/auth/login`             | ✅      | ✅     | ✅    |
-| `GET /health`                      | ✅      | ✅     | ✅    |
-| `GET /api/inventory/components`    | ❌ 401  | ✅     | ✅    |
-| `POST /api/inventory/components`   | ❌ 401  | ❌ 403 | ✅    |
-| `PUT /api/inventory/components/:id`| ❌ 401  | ❌ 403 | ✅    |
-| `DELETE /api/inventory/components/:id` | ❌ 401 | ❌ 403 | ✅ |
+| Operación                              | Anónimo | member | admin |
+| -------------------------------------- | ------- | ------ | ----- |
+| `POST /api/auth/login`                 | ✅      | ✅     | ✅    |
+| `GET /health`                          | ✅      | ✅     | ✅    |
+| `GET /api/inventory/components`        | ❌ 401  | ✅     | ✅    |
+| `POST/PUT/DELETE /api/inventory/components` | ❌ 401 | ❌ 403 | ✅ |
+| `POST /api/inventory/import`           | ❌ 401  | ❌ 403 | ✅    |
+| `GET /api/groups`                      | ❌ 401  | ✅     | ✅    |
+| `POST/PUT/DELETE /api/groups`          | ❌ 401  | ❌ 403 | ✅    |
+| `GET /api/projects`                    | ❌ 401  | ✅     | ✅    |
+| `POST/PUT/DELETE /api/projects`        | ❌ 401  | ❌ 403 | ✅    |
 
 ### 5.6 Consideraciones de seguridad
 
@@ -284,9 +313,9 @@ El parseo del header acepta `Bearer <token>` sin distinguir mayúsculas en el es
 
 ---
 
-## 6. Dominio de inventario
+## 6. Dominios de negocio
 
-### 6.1 Tipo
+### 6.1 Inventario: tipo
 
 ```ts
 export interface HardwareComponent {
@@ -334,6 +363,69 @@ Regla cruzada (`refine`): `available <= quantity`, con error asociado al campo `
 
 Zod se captura antes y devuelve `400 { error: "Invalid component", details }`.
 
+### 6.5 Grupos (`src/modules/groups`)
+
+Un grupo representa un equipo de trabajo del club. Tipo:
+
+```ts
+export interface Group {
+  id: string;
+  name: string;
+  description: string;
+  lead: string;
+  memberCount: number;
+  status: "active" | "inactive";
+}
+```
+
+Validación Zod: `id` con regex `^[a-z0-9-]+$` (máx. 80), `name` 1–120, `description` máx. 500, `lead` máx. 120, `memberCount` entero 0–10000 y `status` en `active|inactive`. Los campos opcionales usan valores por defecto (`""`, `0`, `active`).
+
+| Handler       | Comportamiento                                             |
+| ------------- | ---------------------------------------------------------- |
+| `listGroups`  | `200 { data: [...] }` ordenado por nombre.                  |
+| `addGroup`    | `201 { data: grupo }`; `409` si el `id` existe.             |
+| `editGroup`   | `200 { data: grupo }` o `404`.                              |
+| `removeGroup` | `204` o `404`; `409` si todavía tiene proyectos (`23503`).  |
+
+### 6.6 Proyectos (`src/modules/projects`)
+
+Un proyecto pertenece obligatoriamente a un grupo (`group_id` con `ON DELETE RESTRICT`). Tipo:
+
+```ts
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  groupId: string;
+  status: "planned" | "active" | "paused" | "completed" | "cancelled";
+  startDate: string | null;
+  endDate: string | null;
+}
+```
+
+Validación Zod: `id` y `groupId` con regex `^[a-z0-9-]+$`, `name` 1–120, `description` máx. 1000, `status` en la lista anterior, fechas `YYYY-MM-DD` válidas y regla cruzada `endDate >= startDate` cuando ambas existen.
+
+| Handler         | Comportamiento                                                        |
+| --------------- | --------------------------------------------------------------------- |
+| `listProjects`  | `200 { data: [...] }` ordenado por nombre.                             |
+| `addProject`    | `201 { data: proyecto }`; `400` si el grupo no existe (`23503`).       |
+| `editProject`   | `200 { data: proyecto }` o `404`.                                     |
+| `removeProject` | `204` o `404`.                                                        |
+
+### 6.7 Importador de Excel (`src/modules/inventory/importer.ts`)
+
+Flujo:
+
+1. `multer` recibe un único archivo en memoria (campo `file`), máximo **10 MB** y extensión `.xlsx`.
+2. `ExcelJS` carga el workbook; si falla, se devuelve `400`.
+3. Se lee la primera fila como cabecera y se mapean alias ES/EN (`id/codigo/code`, `name/nombre/componente`, etc.).
+4. Se exigen las cinco columnas obligatorias; si falta alguna, se rechaza el archivo.
+5. Se recorren las filas no vacías (máximo **5000**), se normalizan números y se validan con Zod (incluida la regla `available <= quantity` y la ausencia de `id` duplicados).
+6. `upsertComponents()` ejecuta `INSERT ... ON CONFLICT (id) DO UPDATE` dentro de una transacción (`BEGIN`/`COMMIT`/`ROLLBACK`).
+7. La respuesta es `200 { data: { imported, components } }`.
+
+Cualquier fila inválida cancela la importación completa e informa el número de fila; no se aplican cambios parciales.
+
 ---
 
 ## 7. Capa HTTP y manejo de errores
@@ -379,7 +471,7 @@ Se registran con `console.error` (incluyendo stack) y se responde `500` sin filt
 
 ### 8.1 Pool perezoso
 
-`src/modules/inventory/database.ts` crea el `pg.Pool` la primera vez que se necesita:
+`src/core/database.ts` crea el `pg.Pool` la primera vez que se necesita y lo comparte con todos los módulos:
 
 ```ts
 let pool: Pool | undefined;
@@ -406,23 +498,52 @@ CREATE TABLE IF NOT EXISTS inventory_components (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS groups (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  lead         TEXT NOT NULL DEFAULT '',
+  member_count INTEGER NOT NULL DEFAULT 0 CHECK (member_count >= 0),
+  status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+  status      TEXT NOT NULL DEFAULT 'planned'
+              CHECK (status IN ('planned', 'active', 'paused', 'completed', 'cancelled')),
+  start_date  DATE,
+  end_date    DATE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (start_date IS NULL OR end_date IS NULL OR end_date >= start_date)
+);
 ```
 
-La doble validación (Zod + `CHECK`) protege tanto la API como escrituras directas.
+La doble validación (Zod + `CHECK`/`FK`) protege tanto la API como escrituras directas. El módulo `projects` se inicializa después de `groups` (orden alfabético del loader), por lo que la clave foránea siempre encuentra su tabla.
 
 ### 8.3 Inicialización y seed
 
-`initializeInventoryDatabase()`:
+Cada módulo inicializa su tabla y, si está vacía, inserta datos de ejemplo:
 
-1. Crea la tabla si no existe.
-2. Cuenta filas.
-3. Si el conteo es `0`, inserta tres componentes de ejemplo.
+| Módulo      | Función                        | Seed                                                        |
+| ----------- | ------------------------------ | ----------------------------------------------------------- |
+| `inventory` | `initializeInventoryDatabase`  | `esp32-devkit`, `raspberry-pi-4`, `dht22`.                  |
+| `groups`    | `initializeGroupsDatabase`     | `iot-core`, `robotics-lab`.                                 |
+| `projects`  | `initializeProjectsDatabase`   | `smart-greenhouse` (iot-core), `line-follower` (robotics-lab). |
 
-El seed es idempotente: no se duplica en reinicios ni crece con el tiempo.
+El seed es idempotente: solo se ejecuta cuando el conteo es `0`, por lo que no se duplica en reinicios.
 
 ### 8.4 Consultas
 
-Todas usan parámetros posicionales (`$1..$n`). No hay interpolación de strings de usuario. Las columnas devueltas se limitan a las cinco del dominio.
+Todas usan parámetros posicionales (`$1..$n`). No hay interpolación de strings de usuario. Las columnas se devuelven con alias `camelCase` (`member_count AS "memberCount"`, `group_id AS "groupId"`, `start_date AS "startDate"`, `end_date AS "endDate"`).
+
+La importación usa un cliente dedicado del pool para ejecutar el *upsert* masivo en una transacción; si cualquier fila falla, se hace `ROLLBACK` y no queda ningún cambio parcial.
 
 ### 8.5 Migraciones
 
@@ -441,25 +562,30 @@ Actualmente no hay herramienta de migraciones. El esquema evoluciona con `CREATE
 
 ### 9.2 Estado principal (`App.tsx`)
 
-| Estado       | Persistencia            | Propósito                          |
-| ------------ | ----------------------- | ---------------------------------- |
-| `components` | —                       | Lista del inventario.              |
-| `token`      | `localStorage`          | Token Bearer.                      |
-| `role`       | `localStorage`          | Rol para renderizado condicional.  |
-| `error`      | —                       | Mensajes de error/estado.          |
-| `query`      | —                       | Búsqueda por id/nombre/categoría.  |
-| `login`      | —                       | Formulario de login.               |
-| `form`       | —                       | Formulario de alta.                |
+| Estado       | Persistencia            | Propósito                                   |
+| ------------ | ----------------------- | ------------------------------------------- |
+| `components` | —                       | Lista del inventario.                       |
+| `groups`     | —                       | Lista de grupos.                            |
+| `projects`   | —                       | Lista de proyectos.                         |
+| `token`      | `localStorage`          | Token Bearer.                               |
+| `role`       | `localStorage`          | Rol para renderizado condicional.           |
+| `view`       | —                       | Pestaña activa: `inventory/groups/projects`.|
+| `error`      | —                       | Mensajes de error/estado.                   |
+| `notice`     | —                       | Confirmaciones de operaciones exitosas.     |
+| `login`      | —                       | Formulario de login.                        |
+
+Las vistas están separadas en `frontend/src/views/`: `InventoryView.tsx`, `GroupsView.tsx` y `ProjectsView.tsx`. Cada una mantiene su propio formulario y filtros locales.
 
 ### 9.3 Flujos
 
 1. **Sin token** → pantalla de login.
-2. **Login exitoso** → guarda token/rol, `setToken` dispara el `useEffect` que carga el inventario.
-3. **Carga** → `GET /api/inventory/components`; si recibe `401`, cierra sesión y muestra aviso.
-4. **Alta** (solo admin) → `POST`; recarga la lista.
-5. **Borrado** (solo admin) → `DELETE`; recarga la lista.
-6. **Búsqueda** → filtrado local por id, nombre y categoría (sin llamadas extra).
-7. **Logout** → limpia `localStorage`, estado y lista.
+2. **Login exitoso** → guarda token/rol, `setToken` dispara el `useEffect` que carga inventario, grupos y proyectos en paralelo.
+3. **Carga** → `GET /api/inventory/components`, `GET /api/groups` y `GET /api/projects`; si recibe `401`, cierra sesión y muestra aviso.
+4. **Alta** (solo admin) → `POST` del recurso correspondiente; recarga todas las listas.
+5. **Borrado** (solo admin) → `DELETE`; recarga las listas. Si un grupo tiene proyectos, el backend responde `409` y la UI muestra el error.
+6. **Importación Excel** (solo admin) → `POST /api/inventory/import` con `FormData`; muestra filas procesadas y recarga.
+7. **Búsqueda** → filtrado local del inventario por id, nombre y categoría.
+8. **Logout** → limpia `localStorage`, estado y listas.
 
 ### 9.4 Cliente API (`api.ts`)
 
@@ -467,12 +593,13 @@ Actualmente no hay herramienta de migraciones. El esquema evoluciona con `CREATE
 - No envía `Content-Type: application/json` cuando el body es `FormData`.
 - Traduce `401` a `AUTH_REQUIRED` para que la UI cierre sesión.
 - Extrae `body.error` para mostrar mensajes del backend.
-- Métodos: `list`, `create`, `update`, `remove`, `login`.
+- Expone `inventoryApi` (`list`, `create`, `update`, `remove`, `import`, `login`), `groupsApi` y `projectsApi` (`list`, `create`, `update`, `remove`).
+- Tipos compartidos: `Role`, `Component`, `Group`, `Project` y sus estados.
 
 ### 9.5 Renderizado por rol
 
-- `member`: solo lectura y búsqueda.
-- `admin`: además ve el formulario de alta y los botones de borrado.
+- `member`: solo lectura y búsqueda en las tres pestañas.
+- `admin`: además ve formularios de alta, importación Excel y botones de borrado.
 
 El backend siempre vuelve a validar el rol; ocultar botones es solo UX.
 
@@ -533,7 +660,7 @@ AUTH_ADMIN_* / AUTH_MEMBER_*
 ### 10.5 Escalado
 
 - La API es stateless (sin sesiones en memoria), por lo que puede escalar horizontalmente.
-- El inventario se comparte vía PostgreSQL.
+- Inventario, grupos y proyectos se comparten vía PostgreSQL.
 - El rate limiting y la terminación TLS deben resolverse en el proxy/ingress.
 
 ---
@@ -546,7 +673,7 @@ AUTH_ADMIN_* / AUTH_MEMBER_*
 npm test
 ```
 
-Ejecuta `node --import tsx --test test/unit.test.ts test/app.test.ts`.
+Ejecuta `node --import tsx --test test/*.test.ts` (actualmente 23 pruebas).
 
 ### 11.2 Unitarias (`test/unit.test.ts`)
 
@@ -573,23 +700,25 @@ Casos cubiertos:
 2. Preflight CORS.
 3. Login inválido/incompleto/admin/member.
 4. Rutas sin token, con token inválido.
-5. Lectura de datos semilla por member.
-6. `403` para escrituras de member.
-7. Validación de cantidades e ids.
-8. Creación `201`, duplicado `409`, actualización `200`, inexistente `404`, borrado `204`/`404`.
-9. JSON malformado `400`.
-10. Ruta inexistente `404`.
+5. Lectura de datos semilla de inventario, grupos y proyectos por member.
+6. `403` para escrituras de member en los tres dominios y en la importación.
+7. Inventario: validación de cantidades/ids, `201`, `409`, `200`, `404`, `204`.
+8. Grupos: seed, `201`, duplicado `409`, `400` de validación, `PUT`, borrado `204` y `409` si tiene proyectos (`FK`).
+9. Proyectos: seed, `201`, `400` por grupo inexistente (`FK`) y fechas inválidas, `PUT`, `204`/`404`.
+10. Importación Excel: `403` para member, *upsert* de filas nuevas y existentes, reimportación idempotente, columnas faltantes, fila inválida, extensión `.csv`, archivo ausente.
+11. JSON malformado `400` y ruta inexistente `404`.
 
 ### 11.4 Validación manual con PostgreSQL real
 
 Además de la suite automatizada se ejecutó:
 
-1. `npm run build`.
+1. `npm run build` y `cd frontend && npm run build`.
 2. PostgreSQL 16 real (instancia embebida en el entorno de validación).
 3. `node dist/server.js` con variables reales.
-4. 17 comprobaciones HTTP: health, CORS, login, roles, CRUD, validaciones, duplicados y 404.
-5. Persistencia: creación de un componente, `SIGTERM`, reinicio y verificación de que el dato seguía ahí y el seed no se duplicó.
-6. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
+4. **39 comprobaciones HTTP**: health, CORS, login, roles, CRUD de inventario/grupos/proyectos, validaciones, duplicados, restricciones `FK` y errores `404`.
+5. Importación Excel real: creación/actualización de componentes, reimportación idempotente y rechazo de archivos/filas inválidas.
+6. Persistencia: creación de grupo, proyecto y componente importado, `SIGTERM`, reinicio y verificación de que los datos seguían ahí y los seeds no se duplicaron.
+7. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
 
 Resultado: **todo en verde**.
 
@@ -744,7 +873,7 @@ Secuencia de commits:
 
 ### 15.3 Resolución
 
-Se conservó la funcionalidad posterior válida (autenticación, roles, búsqueda y UI responsive) y se eliminó únicamente la importación de Excel:
+En esa corrección se conservó la funcionalidad posterior válida (autenticación, roles, búsqueda y UI responsive) y se eliminó la importación de Excel (restaurada después, ya endurecida):
 
 - `routes.ts`: rutas de inventario con `requireAuth`/`requireRole`, sin `multer` ni endpoint de importación.
 - `api.ts`: cliente de login/list/create/update/remove, sin `import`.
@@ -756,9 +885,11 @@ Se conservó la funcionalidad posterior válida (autenticación, roles, búsqued
 - `grep` sin marcadores de conflicto.
 - `grep` sin referencias a Excel/multer/import.
 - `npm run build` ✅
-- `npm test` ✅ (17 pruebas)
+- `npm test` ✅ (17 pruebas en ese momento; hoy son 23)
 - Build del frontend ✅
 - E2E con PostgreSQL real ✅
+
+> **Nota posterior:** tras resolver el incidente se restauró el importador de Excel (endurecido) y se añadieron los módulos de grupos y proyectos. El estado vigente se describe en las secciones 6, 8 y 11.
 
 ---
 

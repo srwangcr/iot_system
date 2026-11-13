@@ -1,32 +1,5 @@
-import { Pool } from "pg";
 import type { HardwareComponent } from "./types.js";
-
-let pool: Pool | undefined;
-
-/**
- * Creates the PostgreSQL pool lazily so the environment (including a local
- * .env file) is fully loaded before the connection is configured. Tests can
- * replace the pool through setPool().
- */
-export function getPool(): Pool {
-  if (!pool) {
-    pool = new Pool({ connectionString: process.env.DATABASE_URL });
-    pool.on("error", (error) => {
-      console.error("Unexpected PostgreSQL pool error", error);
-    });
-  }
-  return pool;
-}
-
-export function setPool(next: Pool | undefined): void {
-  pool = next;
-}
-
-export async function closePool(): Promise<void> {
-  const current = pool;
-  pool = undefined;
-  if (current) await current.end();
-}
+import { getPool } from "../../core/database.js";
 
 export async function initializeInventoryDatabase(): Promise<void> {
   await getPool().query(`
@@ -87,4 +60,33 @@ export async function updateComponent(
 export async function deleteComponent(id: string): Promise<boolean> {
   const result = await getPool().query("DELETE FROM inventory_components WHERE id = $1", [id]);
   return result.rowCount === 1;
+}
+
+export async function upsertComponents(components: HardwareComponent[]): Promise<number> {
+  if (components.length === 0) return 0;
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    for (const component of components) {
+      await client.query(
+        `INSERT INTO inventory_components (id, name, category, quantity, available)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           category = EXCLUDED.category,
+           quantity = EXCLUDED.quantity,
+           available = EXCLUDED.available,
+           updated_at = NOW()`,
+        [component.id, component.name, component.category, component.quantity, component.available],
+      );
+    }
+    await client.query("COMMIT");
+    return components.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

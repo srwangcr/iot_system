@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
+import { isCheckViolation, isUniqueViolation } from "../../core/databaseErrors.js";
 import { createComponent, deleteComponent, findComponents, updateComponent } from "./database.js";
+import { importInventoryWorkbook, InventoryImportError } from "./importer.js";
 
 const componentFields = z.object({
   id: z.string().trim().min(1).regex(/^[a-z0-9-]+$/),
@@ -25,11 +27,11 @@ function handleError(error: unknown, response: Response): void {
     response.status(400).json({ error: "Invalid component", details: error.flatten() });
     return;
   }
-  if ((error as { code?: string }).code === "23505") {
+  if (isUniqueViolation(error)) {
     response.status(409).json({ error: "A component with that id already exists" });
     return;
   }
-  if ((error as { code?: string }).code === "23514") {
+  if (isCheckViolation(error)) {
     response.status(400).json({ error: "Invalid component quantities" });
     return;
   }
@@ -81,5 +83,24 @@ export async function removeComponent(request: Request, response: Response): Pro
     response.status(204).send();
   } catch (error) {
     handleError(error, response);
+  }
+}
+
+export async function importComponents(request: Request, response: Response): Promise<void> {
+  if (!request.file) {
+    response.status(400).json({ error: "Attach an .xlsx file using the 'file' field" });
+    return;
+  }
+
+  try {
+    const result = await importInventoryWorkbook(request.file.buffer);
+    response.json({ data: result });
+  } catch (error) {
+    if (error instanceof InventoryImportError) {
+      response.status(400).json({ error: error.message });
+      return;
+    }
+    console.error(error);
+    response.status(500).json({ error: "Could not import inventory" });
   }
 }

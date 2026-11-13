@@ -1,5 +1,5 @@
 import { createApp } from "./app.js";
-import { closePool } from "./modules/inventory/database.js";
+import { closePool } from "./core/database.js";
 
 function loadEnvironment(): void {
   try {

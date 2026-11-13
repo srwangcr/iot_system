@@ -1,18 +1,20 @@
 # IoT Club Management
 
-Sistema de gestión de inventario para un club de IoT. Backend modular en **Node.js + Express + TypeScript**, base de datos **PostgreSQL** y frontend **React + Vite**.
+Sistema de gestión para un club de IoT: **inventario de componentes**, **grupos de trabajo**, **proyectos** e **importación desde Excel**. Backend modular en **Node.js + Express + TypeScript**, base de datos **PostgreSQL** y frontend **React + Vite**.
 
-El repositorio quedó reparado tras un `revert` que había dejado marcadores de conflicto de Git en el código y una funcionalidad de importación de Excel a medio eliminar. Actualmente el proyecto compila, arranca, pasa las pruebas automatizadas y fue validado de extremo a extremo contra una instancia real de PostgreSQL.
+El repositorio quedó reparado tras un `revert` que había dejado marcadores de conflicto de Git en el código. Sobre esa base se restauró el importador de Excel y se añadieron los módulos de grupos y proyectos. Actualmente el proyecto compila, arranca, pasa las pruebas automatizadas y fue validado de extremo a extremo contra una instancia real de PostgreSQL.
 
 ---
 
 ## 1. Características
 
-- Arquitectura modular: cada módulo (`auth`, `inventory`) se descubre y carga desde su `manifest.json`.
+- Arquitectura modular: cada módulo (`auth`, `inventory`, `groups`, `projects`) se descubre y carga desde su `manifest.json`.
 - Autenticación por token Bearer con dos roles: `admin` y `member`.
 - CRUD de componentes de inventario con validación de datos.
-- Inventario inicial (seed) automático la primera vez que se crea la tabla.
-- Frontend React con inicio de sesión, búsqueda, estadísticas, tabla y formulario de alta para administradores.
+- Importación de inventario desde Excel (`.xlsx`) con *upsert* transaccional.
+- CRUD de grupos de trabajo y de proyectos asociados a un grupo (clave foránea con `ON DELETE RESTRICT`).
+- Datos iniciales (seed) automáticos la primera vez que se crea cada tabla.
+- Frontend React con inicio de sesión, pestañas de Inventario/Grupos/Proyectos, búsqueda, estadísticas, tablas y formularios para administradores.
 - CORS configurable, manejo centralizado de errores, healthchecks y apagado ordenado.
 - Docker multi-stage para API y frontend, con PostgreSQL en Docker Compose.
 - Pruebas unitarias, de integración y end-to-end automatizadas.
@@ -30,12 +32,15 @@ El repositorio quedó reparado tras un `revert` que había dejado marcadores de 
                                                 │  ├────────────────────┤  │
                                                 │  │ modules/auth       │  │
                                                 │  │ modules/inventory  │  │
+                                                │  │ modules/groups     │  │
+                                                │  │ modules/projects   │  │
                                                 │  └─────────┬──────────┘  │
                                                 └────────────┼─────────────┘
                                                              │ pg
                                                    ┌─────────▼──────────┐
                                                    │ PostgreSQL 16      │
                                                    │ inventory_components│
+                                                   │ groups / projects  │
                                                    └────────────────────┘
 ```
 
@@ -44,7 +49,7 @@ Flujo de una petición:
 1. `src/server.ts` carga `.env` (si existe), crea la app y escucha en `PORT`.
 2. `createApp()` registra JSON, CORS, `/health` y carga los módulos.
 3. Cada módulo registra rutas y hooks de inicialización.
-4. Las rutas de inventario validan autenticación/rol y delegan en el controlador.
+4. Las rutas de cada módulo validan autenticación/rol y delegan en el controlador.
 5. El controlador valida con Zod y ejecuta SQL parametrizado en PostgreSQL.
 6. Los errores se normalizan como JSON (`400`, `401`, `403`, `404`, `409`, `500`).
 
@@ -207,6 +212,15 @@ Authorization: Bearer <token>
 | `POST`   | `/api/inventory/components`      | admin         | Crea un componente.                 |
 | `PUT`    | `/api/inventory/components/:id`  | admin         | Actualiza un componente.            |
 | `DELETE` | `/api/inventory/components/:id`  | admin         | Elimina un componente.              |
+| `POST`   | `/api/inventory/import`          | admin         | Importa/actualiza inventario desde un `.xlsx` (campo `file`). |
+| `GET`    | `/api/groups`                    | admin/member  | Lista grupos ordenados por nombre.  |
+| `POST`   | `/api/groups`                    | admin         | Crea un grupo.                      |
+| `PUT`    | `/api/groups/:id`                | admin         | Actualiza un grupo.                 |
+| `DELETE` | `/api/groups/:id`                | admin         | Elimina un grupo sin proyectos.     |
+| `GET`    | `/api/projects`                  | admin/member  | Lista proyectos ordenados por nombre. |
+| `POST`   | `/api/projects`                  | admin         | Crea un proyecto asociado a un grupo. |
+| `PUT`    | `/api/projects/:id`              | admin         | Actualiza un proyecto.              |
+| `DELETE` | `/api/projects/:id`              | admin         | Elimina un proyecto.                |
 
 ### 7.3 Ejemplos
 
@@ -234,17 +248,45 @@ curl -X PUT http://localhost:3000/api/inventory/components/arduino-uno \
 
 curl -X DELETE http://localhost:3000/api/inventory/components/arduino-uno \
   -H "Authorization: Bearer $TOKEN"
+
+# Importar inventario desde Excel (columnas: id, name, category, quantity, available)
+curl -X POST http://localhost:3000/api/inventory/import \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@inventario.xlsx"
+
+# Crear un grupo y un proyecto asociado
+curl -X POST http://localhost:3000/api/groups \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"iot-core","name":"Núcleo IoT","description":"Firmware y conectividad","lead":"admin","memberCount":6,"status":"active"}'
+
+curl -X POST http://localhost:3000/api/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"smart-greenhouse","name":"Invernadero inteligente","groupId":"iot-core","status":"active","startDate":"2026-01-15","endDate":"2026-06-30"}'
 ```
+
+Formato del Excel de importación:
+
+- Solo se aceptan archivos `.xlsx` de hasta **10 MB** y un máximo de **5000 filas**.
+- La primera fila debe contener cabeceras. Se aceptan alias en español e inglés:
+  - `id` / `codigo` / `code`
+  - `name` / `nombre` / `componente`
+  - `category` / `categoria`
+  - `quantity` / `cantidad` / `total`
+  - `available` / `disponible` / `disponibles`
+- La importación es un *upsert* por `id` dentro de una transacción: crea filas nuevas y actualiza las existentes.
+- Si una fila es inválida, se rechaza el archivo completo y se indica el número de fila.
 
 ### 7.4 Errores
 
 | Código | Significado                                                        |
 | ------ | ------------------------------------------------------------------ |
-| `400`  | Body inválido, JSON malformado o cantidades inconsistentes.        |
+| `400`  | Body inválido, JSON malformado, cantidades/fechas inconsistentes, archivo Excel inválido o grupo inexistente. |
 | `401`  | Token ausente/inválido o credenciales incorrectas.                 |
 | `403`  | Token válido sin el rol necesario.                                 |
-| `404`  | Componente o ruta inexistente.                                     |
-| `409`  | Ya existe un componente con ese `id`.                              |
+| `404`  | Componente, grupo, proyecto o ruta inexistente.                    |
+| `409`  | `id` duplicado o grupo con proyectos asociados.                    |
 | `500`  | Error interno.                                                     |
 
 Formato:
@@ -267,17 +309,49 @@ CREATE TABLE inventory_components (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE groups (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  lead         TEXT NOT NULL DEFAULT '',
+  member_count INTEGER NOT NULL DEFAULT 0 CHECK (member_count >= 0),
+  status       TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE projects (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  group_id    TEXT NOT NULL REFERENCES groups(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+  status      TEXT NOT NULL DEFAULT 'planned'
+              CHECK (status IN ('planned', 'active', 'paused', 'completed', 'cancelled')),
+  start_date  DATE,
+  end_date    DATE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (start_date IS NULL OR end_date IS NULL OR end_date >= start_date)
+);
 ```
 
 Reglas de validación en la API:
 
-- `id`: obligatorio, minúsculas, números y guiones (`^[a-z0-9-]+$`), máximo implícito por body.
+- `id`: obligatorio, minúsculas, números y guiones (`^[a-z0-9-]+$`), máximo 80 caracteres.
 - `name`: 1–120 caracteres.
 - `category`: 1–80 caracteres.
-- `quantity` y `available`: enteros ≥ 0.
-- `available <= quantity`.
+- `quantity` y `available`: enteros ≥ 0; `available <= quantity`.
+- `groups.memberCount`: entero entre 0 y 10000; `status`: `active` o `inactive`.
+- `projects.groupId`: debe existir en `groups`; `status`: `planned`, `active`, `paused`, `completed` o `cancelled`.
+- `projects.startDate` / `endDate`: formato `YYYY-MM-DD`, fechas válidas y `endDate >= startDate` si ambas existen.
+- Un grupo con proyectos asociados no puede eliminarse (`409`).
 
-Si la tabla está vacía, se insertan tres componentes de ejemplo: `esp32-devkit`, `raspberry-pi-4` y `dht22`.
+Si una tabla está vacía, se insertan datos de ejemplo:
+
+- Inventario: `esp32-devkit`, `raspberry-pi-4` y `dht22`.
+- Grupos: `iot-core` y `robotics-lab`.
+- Proyectos: `smart-greenhouse` (grupo `iot-core`) y `line-follower` (grupo `robotics-lab`).
 
 ---
 
@@ -289,13 +363,20 @@ Si la tabla está vacía, se insertan tres componentes de ejemplo: `esp32-devkit
 │   ├── app.ts                     # Construcción de la app Express
 │   ├── server.ts                  # Arranque, .env, apagado ordenado
 │   ├── core/
+│   │   ├── database.ts            # Pool PostgreSQL perezoso (inyectable en tests)
+│   │   ├── databaseErrors.ts      # Detección de unique/FK/check violations
 │   │   ├── module.ts              # Contrato IModule y ModuleContext
 │   │   └── moduleLoader.ts        # Descubrimiento y validación de módulos
 │   └── modules/
 │       ├── auth/                  # Cuentas, login y middleware de roles
-│       └── inventory/             # Rutas, controlador, validación y PostgreSQL
+│       ├── inventory/             # CRUD de componentes + importador Excel
+│       ├── groups/                # CRUD de grupos de trabajo
+│       └── projects/              # CRUD de proyectos ligados a grupos
 ├── frontend/
-│   ├── src/                       # React: App, cliente API y estilos
+│   ├── src/
+│   │   ├── App.tsx                # Autenticación, pestañas y estado global
+│   │   ├── api.ts                 # Cliente API tipado
+│   │   └── views/                 # Vistas de inventario, grupos y proyectos
 │   ├── nginx.conf                 # SPA + cabeceras de seguridad
 │   └── Dockerfile
 ├── test/                          # Pruebas unitarias y end-to-end
@@ -314,7 +395,7 @@ Si la tabla está vacía, se insertan tres componentes de ejemplo: `esp32-devkit
 npm test
 ```
 
-Cobertura actual (17 pruebas):
+Cobertura actual (23 pruebas):
 
 - **Unitarias**
   - Validación de manifiestos de módulos.
@@ -326,14 +407,17 @@ Cobertura actual (17 pruebas):
   - Healthcheck y preflight CORS.
   - Login inválido, incompleto, admin y member.
   - Protección de rutas y distinción `401` / `403`.
-  - Datos semilla, creación, duplicados, actualización, borrado y `404`.
-  - Validación de cantidades, JSON malformado y rutas inexistentes.
+  - Inventario: datos semilla, creación, duplicados, actualización, borrado y `404`.
+  - Grupos: datos semilla, CRUD, validación y bloqueo de borrado con proyectos (`FK`).
+  - Proyectos: datos semilla, CRUD, validación de fechas y de grupo existente (`FK`).
+  - Importación Excel: permisos, *upsert* idempotente, columnas faltantes, filas inválidas, extensión incorrecta y archivo ausente.
+  - JSON malformado y rutas inexistentes.
 
 Además se validó manualmente el flujo completo con:
 
 - `npm run build` + `node dist/server.js`.
 - Una instancia **real de PostgreSQL 16**.
-- Login, CRUD, roles, CORS, persistencia tras reinicio y apagado con `SIGTERM`.
+- 39 comprobaciones end-to-end: login, CRUD, roles, grupos, proyectos, restricciones `FK`, importación Excel, CORS, persistencia tras reinicio y apagado con `SIGTERM`.
 - `npm run dev` con carga automática de `.env` y resolución de módulos `.ts`.
 
 ---
@@ -345,6 +429,7 @@ Además se validó manualmente el flujo completo con:
 - La configuración de auth se valida al arrancar (fail-fast).
 - Todas las consultas SQL usan parámetros (`$1`, `$2`, ...), sin concatenación.
 - Se valida el body con Zod antes de llegar a la base de datos.
+- La importación Excel limita el archivo a 10 MB, 5000 filas y solo `.xlsx`; el *upsert* se ejecuta en una transacción.
 - Se aplica `limit` de 1 MB al body JSON y se desactiva `x-powered-by`.
 - Nginx añade `X-Content-Type-Options`, `X-Frame-Options` y `Referrer-Policy`.
 
@@ -355,7 +440,7 @@ Limitaciones conocidas y siguientes pasos recomendados:
 - No hay HTTPS en el proyecto; debe terminarse TLS en un proxy/ingress.
 - Las contraseñas se comparan en texto plano contra variables de entorno; usar hashes (Argon2/bcrypt) si se migra a usuarios en base de datos.
 - No hay migraciones versionadas; el esquema se crea con `CREATE TABLE IF NOT EXISTS`.
-- El frontend no implementa edición de componentes (la API `PUT` sí está disponible y probada).
+- El frontend permite crear y eliminar componentes, grupos y proyectos, pero no editarlos (las rutas `PUT` sí están disponibles y probadas).
 
 ---
 
@@ -373,16 +458,19 @@ Limitaciones conocidas y siguientes pasos recomendados:
 
 ---
 
-## 13. Correcciones aplicadas en esta revisión
+## 13. Correcciones y funcionalidades aplicadas en esta revisión
 
 1. Resueltos los marcadores de conflicto en `src/modules/inventory/routes.ts`, `frontend/src/App.tsx`, `frontend/src/api.ts` y `frontend/src/styles.css`.
-2. Eliminados los restos de la funcionalidad Excel (`multer`, `exceljs`, endpoint `/api/inventory/import`, UI y método del cliente).
+2. Restaurado el importador de Excel (`exceljs` + `multer`) con validación de columnas ES/EN, límites de tamaño/filas y *upsert* transaccional; se añadió su UI.
 3. Corregido `npm run dev`: el loader ahora resuelve entradas `.js` de los manifiestos hacia `.ts` en desarrollo.
 4. Corregido el build Docker: se copia `scripts/` antes de `npm run build`.
 5. Añadido `src/app.ts` con una app reutilizable y `server.ts` con carga de `.env` y apagado ordenado.
 6. Autenticación endurecida: configuración fail-fast, sin tokens aleatorios inválidos, `403` correcto para roles insuficientes y matching estricto de Bearer.
-7. `pg` ahora crea el pool de forma perezosa y se puede inyectar en pruebas; se cierra en el apagado.
-8. Añadido manejo centralizado de errores (`400` para JSON inválido, `404` JSON) y CORS con `Vary: Origin`.
-9. Actualizado `zod` a 4.x para eliminar una vulnerabilidad de denegación de servicio (0 vulnerabilidades en `npm audit --omit=dev`).
+7. `pg` ahora crea el pool de forma perezosa (`src/core/database.ts`) y se puede inyectar en pruebas; se cierra en el apagado.
+8. Añadido manejo centralizado de errores (`400` para JSON inválido, `404` JSON), CORS con `Vary: Origin` y helpers para errores de PostgreSQL.
+9. Actualizado `zod` a 4.x para eliminar una vulnerabilidad de denegación de servicio (0 vulnerabilidades en `npm audit`).
 10. Añadidos healthchecks, `.dockerignore`, configuración de Nginx y variables de Compose parametrizables.
-11. Añadida la suite de pruebas y esta documentación.
+11. **Nuevo módulo `groups`**: CRUD de grupos de trabajo con validación, seed y permisos por rol.
+12. **Nuevo módulo `projects`**: CRUD de proyectos con relación a grupos, validación de fechas/estados, seed y borrado restringido por `FK`.
+13. **Frontend ampliado**: pestañas de Inventario, Grupos y Proyectos, formularios de alta, importación Excel y estadísticas por sección.
+14. Añadida la suite de pruebas (23) y actualizada esta documentación.
