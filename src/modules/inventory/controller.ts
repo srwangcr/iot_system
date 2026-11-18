@@ -1,13 +1,14 @@
 import type { Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { isCheckViolation, isUniqueViolation } from "../../core/databaseErrors.js";
-import { createComponent, deleteComponent, findComponents, updateComponent } from "./database.js";
+import { createComponent, deleteComponent, findComponents, findLocations, updateComponent } from "./database.js";
 import { importInventoryWorkbook, InventoryImportError } from "./importer.js";
 
 const componentFields = z.object({
   id: z.string().trim().min(1).regex(/^[a-z0-9-]+$/),
   name: z.string().trim().min(1).max(120),
   category: z.string().trim().min(1).max(80),
+  location: z.string().trim().max(80).default(""),
   quantity: z.number().int().min(0),
   available: z.number().int().min(0),
 });
@@ -42,6 +43,14 @@ function handleError(error: unknown, response: Response): void {
 export async function listComponents(_request: Request, response: Response, next: NextFunction): Promise<void> {
   try {
     response.json({ data: await findComponents() });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listLocations(_request: Request, response: Response, next: NextFunction): Promise<void> {
+  try {
+    response.json({ data: await findLocations() });
   } catch (error) {
     next(error);
   }

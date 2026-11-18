@@ -17,6 +17,7 @@ const rowSchema = z
     id: z.string().trim().min(1).max(80).regex(/^[a-z0-9-]+$/),
     name: z.string().trim().min(1).max(120),
     category: z.string().trim().min(1).max(80),
+    location: z.string().trim().max(80).default(""),
     quantity: z.number().int().min(0),
     available: z.number().int().min(0),
   })
@@ -40,9 +41,13 @@ const fieldAliases: Record<InventoryField, string[]> = {
   id: ["id", "codigo", "code"],
   name: ["name", "nombre", "componente"],
   category: ["category", "categoria", "tipo"],
+  location: ["location", "ubicacion", "localizacion", "ubicacion-general"],
   quantity: ["quantity", "cantidad", "total", "stock"],
   available: ["available", "disponible", "disponibles"],
 };
+
+const horizontalLocationAliases = ["ubicacion-h", "ubicacion-horizontal", "horizontal", "fila"];
+const verticalLocationAliases = ["ubicacion-v", "ubicacion-vertical", "vertical", "columna"];
 
 function normalizeHeader(value: unknown): string {
   return String(value ?? "")
@@ -94,6 +99,32 @@ function normalizeText(value: unknown): string {
   return String(unwrapCellValue(value) ?? "").trim();
 }
 
+/**
+ * Merges the club workbook's two location columns into a single value, for
+ * example "A" + "5" -> "A5". A plain "Ubicación" column is used only when both
+ * parts are empty, so legacy spreadsheets keep working.
+ */
+function mergeLocation(
+  values: unknown[],
+  columns: LocationColumns,
+  fallback: string,
+): string {
+  const read = (index: number | undefined): string =>
+    index === undefined ? "" : normalizeText(values[index]).replace(/\s+/g, " ");
+
+  const horizontal = read(columns.horizontal);
+  const vertical = read(columns.vertical);
+  const combined = read(columns.combined);
+  const h = isPlaceholder(horizontal) ? "" : horizontal;
+  const v = isPlaceholder(vertical) ? "" : vertical;
+
+  if (h && v) return /^[a-zA-Z]$/.test(h) ? `${h}${v}` : `${h} ${v}`;
+  if (h) return h;
+  if (v) return v;
+  if (!isPlaceholder(combined)) return combined;
+  return isPlaceholder(fallback) ? "" : fallback;
+}
+
 function normalizeClubId(value: unknown): string {
   return normalizeText(value)
     .normalize("NFD")
@@ -104,8 +135,15 @@ function normalizeClubId(value: unknown): string {
     .slice(0, 80);
 }
 
+interface LocationColumns {
+  combined?: number;
+  horizontal?: number;
+  vertical?: number;
+}
+
 interface ColumnMapping {
   columnMap: Map<number, InventoryField>;
+  locationColumns: LocationColumns;
   clubLayout: boolean;
 }
 
@@ -125,6 +163,15 @@ function buildColumnMapping(headerRow: unknown[]): {
 
   const columnMap = new Map<number, InventoryField>();
   const usedColumns = new Set<number>();
+
+  const findColumn = (aliases: string[]): number | undefined =>
+    columns.find((candidate) => aliases.includes(candidate.key))?.index;
+
+  const locationColumns: LocationColumns = {
+    horizontal: findColumn(horizontalLocationAliases),
+    vertical: findColumn(verticalLocationAliases),
+    combined: findColumn(fieldAliases.location),
+  };
 
   function assign(field: InventoryField, aliases: string[]): void {
     for (const alias of aliases) {
@@ -155,7 +202,7 @@ function buildColumnMapping(headerRow: unknown[]): {
 
   const mappedFields = new Set(columnMap.values());
   const missing = requiredFields.filter((field) => !mappedFields.has(field));
-  return { mapping: { columnMap, clubLayout }, missing };
+  return { mapping: { columnMap, locationColumns, clubLayout }, missing };
 }
 
 interface SheetLayout extends ColumnMapping {
@@ -203,7 +250,7 @@ export async function importInventoryWorkbook(
     throw new InventoryImportError("The uploaded file is not a valid .xlsx workbook");
   }
 
-  const { worksheet, columnMap, clubLayout } = resolveSheetLayout(workbook);
+  const { worksheet, columnMap, locationColumns, clubLayout } = resolveSheetLayout(workbook);
 
   const rows: Array<{ rowNumber: number; values: unknown[] }> = [];
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
@@ -230,6 +277,8 @@ export async function importInventoryWorkbook(
         raw[field] = normalizeText(values[columnIndex]);
       }
     }
+
+    raw.location = mergeLocation(values, locationColumns, normalizeText(raw.location));
 
     if (clubLayout) {
       raw.id = normalizeClubId(raw.id);

@@ -168,7 +168,7 @@ test("loadModules rejects entry points outside the module directory", async () =
   });
 });
 
-test("authentication configuration fails fast and matches bearer tokens", () => {
+test("authentication configuration fails fast and matches bearer tokens", async () => {
   const snapshot = Object.fromEntries(
     AUTH_ENV_KEYS.map((key) => [key, process.env[key]]),
   ) as Record<string, string | undefined>;
@@ -186,11 +186,11 @@ test("authentication configuration fails fast and matches bearer tokens", () => 
     process.env.AUTH_MEMBER_TOKEN = "member-token";
 
     assert.doesNotThrow(() => assertAuthConfiguration());
-    assert.equal(findAccountByAuthorization("Bearer admin-token")?.role, "admin");
-    assert.equal(findAccountByAuthorization("bearer member-token")?.role, "member");
-    assert.equal(findAccountByAuthorization("Basic admin-token"), undefined);
-    assert.equal(findAccountByAuthorization("Bearer wrong-token"), undefined);
-    assert.equal(findAccountByAuthorization(undefined), undefined);
+    assert.equal((await findAccountByAuthorization("Bearer admin-token"))?.role, "admin");
+    assert.equal((await findAccountByAuthorization("bearer member-token"))?.role, "member");
+    assert.equal(await findAccountByAuthorization("Basic admin-token"), undefined);
+    assert.equal(await findAccountByAuthorization("Bearer wrong-token"), undefined);
+    assert.equal(await findAccountByAuthorization(undefined), undefined);
 
     process.env.AUTH_MEMBER_TOKEN = "admin-token";
     assert.throws(() => assertAuthConfiguration(), /must be different/);

@@ -7,8 +7,12 @@ export interface AuthenticatedRequest extends Request {
   user?: { username: string; role: Role };
 }
 
-export function requireAuth(request: AuthenticatedRequest, response: Response, next: NextFunction): void {
-  const account = findAccountByAuthorization(request.header("authorization"));
+export async function requireAuth(
+  request: AuthenticatedRequest,
+  response: Response,
+  next: NextFunction,
+): Promise<void> {
+  const account = await findAccountByAuthorization(request.header("authorization"));
   if (!account) {
     response.status(401).json({ error: "Authentication required" });
     return;
@@ -18,8 +22,12 @@ export function requireAuth(request: AuthenticatedRequest, response: Response, n
 }
 
 export function requireRole(role: Role) {
-  return (request: AuthenticatedRequest, response: Response, next: NextFunction): void => {
-    const account = findAccountByAuthorization(request.header("authorization"));
+  return async (
+    request: AuthenticatedRequest,
+    response: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const account = await findAccountByAuthorization(request.header("authorization"));
     if (!account) {
       response.status(401).json({ error: "Authentication required" });
       return;

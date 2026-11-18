@@ -2,7 +2,7 @@
 
 **Versión del documento:** 1.1  
 **Última actualización:** 13 de noviembre de 2026  
-**Estado:** proyecto compilando, 24 pruebas automatizadas en verde y flujo end-to-end (39 comprobaciones) validado contra PostgreSQL 16 real.
+**Estado:** proyecto compilando, 26 pruebas automatizadas en verde y flujo end-to-end (43 comprobaciones + 10 específicas de registro/ubicaciones) validado contra PostgreSQL 16 real.
 
 ---
 
@@ -65,11 +65,12 @@ El sistema administra el inventario de hardware, los grupos de trabajo y los pro
 │                                          │                               │
 │            ┌─────────────────────────────┴──────────────────────┐        │
 │            │ modules/auth                                   │        │
-│            │   /api/auth/login                              │        │
+│            │   /api/auth/login  /api/auth/register          │        │
 │            │   requireAuth / requireRole                    │        │
 │            ├────────────────────────────────────────────────┤        │
 │            │ modules/inventory                              │        │
 │            │   /api/inventory/components [GET/POST/PUT/DEL]  │        │
+│            │   /api/inventory/locations [GET]               │        │
 │            │   /api/inventory/import [POST]                 │        │
 │            │   controller.ts + importer.ts (Zod/ExcelJS)    │        │
 │            ├────────────────────────────────────────────────┤        │
@@ -85,6 +86,7 @@ El sistema administra el inventario de hardware, los grupos de trabajo y los pro
                  │ PostgreSQL 16        │
                  │ inventory_components │
                  │ groups / projects    │
+                 │ users                │
                  └──────────────────────┘
 ```
 
@@ -101,11 +103,12 @@ src/
 │   └── moduleLoader.ts            # Descubrimiento, validación, import dinámico
 └── modules/
     ├── auth/
-    │   ├── accounts.ts            # Configuración y búsqueda de cuentas
+    │   ├── accounts.ts            # Cuentas de entorno + resolución de tokens
+    │   ├── database.ts            # Tabla users, hash scrypt y tokens
     │   ├── index.ts               # Implementación de IModule
     │   ├── manifest.json
     │   ├── middleware.ts          # requireAuth, requireRole
-    │   └── routes.ts              # POST /login
+    │   └── routes.ts              # POST /login y POST /register
     ├── inventory/
     │   ├── controller.ts          # Handlers HTTP + esquemas Zod
     │   ├── database.ts            # Consultas SQL + upsert transaccional
@@ -228,7 +231,7 @@ Esto corrige el fallo que impedía ejecutar `npm run dev`.
 
 Los directorios se ordenan alfabéticamente antes de cargar. En este proyecto:
 
-1. `auth` — registra `/api/auth`, valida configuración.
+1. `auth` — registra `/api/auth`, valida configuración e inicializa la tabla `users`.
 2. `groups` — registra `/api/groups`, inicializa la tabla y el seed.
 3. `inventory` — registra rutas de inventario e importación, inicializa la tabla y el seed.
 4. `projects` — registra `/api/projects`, inicializa la tabla (depende de `groups`) y el seed.
@@ -249,14 +252,29 @@ No hace falta tocar `server.ts` ni el loader.
 
 ### 5.1 Modelo
 
-No hay tabla de usuarios. Las cuentas viven en variables de entorno:
+Conviven dos tipos de cuentas:
+
+1. **Cuentas de entorno** (administrador/miembro), definidas en variables:
 
 | Rol    | Variables                                                       |
 | ------ | --------------------------------------------------------------- |
 | admin  | `AUTH_ADMIN_USERNAME`, `AUTH_ADMIN_PASSWORD`, `AUTH_ADMIN_TOKEN` |
 | member | `AUTH_MEMBER_USERNAME`, `AUTH_MEMBER_PASSWORD`, `AUTH_MEMBER_TOKEN` |
 
-`src/modules/auth/accounts.ts` centraliza la lectura y validación.
+2. **Usuarios registrados** desde la aplicación, persistidos en PostgreSQL:
+
+```sql
+CREATE TABLE users (
+  id            TEXT PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+  token         TEXT NOT NULL UNIQUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+`src/modules/auth/accounts.ts` centraliza las cuentas de entorno y la resolución de tokens; `src/modules/auth/database.ts` gestiona la tabla `users`, el hash de contraseñas y los tokens aleatorios.
 
 ### 5.2 Fail-fast
 
@@ -268,17 +286,31 @@ No hay tabla de usuarios. Las cuentas viven en variables de entorno:
 
 Sin esto, el código anterior podía emitir un token aleatorio en el login que el middleware nunca aceptaba: el usuario iniciaba sesión y todas las peticiones posteriores devolvían `401`.
 
-### 5.3 Login
+### 5.3 Login y registro
 
 ```http
 POST /api/auth/login
 ```
 
 1. Valida body con Zod (`username` y `password` obligatorios).
-2. Busca una cuenta con usuario y contraseña exactos.
-3. Devuelve `{ token, role, username }`.
+2. Busca primero una cuenta de entorno con usuario y contraseña exactos.
+3. Si no coincide, busca en `users` y verifica el hash `scrypt` (sal aleatoria + `timingSafeEqual`).
+4. Devuelve `{ token, role, username }`.
 
-No se generan tokens aleatorios: el token devuelto es siempre el configurado, por lo que es válido para las rutas protegidas.
+Las cuentas de entorno devuelven siempre su token configurado. Los usuarios registrados reciben en el registro un token aleatorio de 32 bytes persistido en la tabla.
+
+```http
+POST /api/auth/register
+Content-Type: application/json
+
+{ "username": "nuevo.miembro", "password": "minimo-8-caracteres" }
+```
+
+1. Valida `username` (3–60, letras/números/`.`/`-`/`_`) y `password` (8–200).
+2. Rechaza con `409` si coincide con una cuenta de entorno o con un usuario existente.
+3. Crea la cuenta **siempre con rol `member`**; un campo `role` enviado por el cliente se ignora.
+4. Hashea la contraseña con `scrypt` y genera el token.
+5. Responde `201` con `{ token, role, username }`, listo para usar en `Authorization`.
 
 ### 5.4 Middleware
 
@@ -288,6 +320,8 @@ No se generan tokens aleatorios: el token devuelto es siempre el configurado, po
   - Token válido de otro rol → `403`.
   - Rol correcto → continúa.
 
+`findAccountByAuthorization()` es asíncrona: compara el token con las cuentas de entorno y, si no coincide y existe pool de base de datos, consulta `users`. Así los tokens de entorno siguen funcionando incluso en pruebas unitarias sin base de datos.
+
 El parseo del header acepta `Bearer <token>` sin distinguir mayúsculas en el esquema, pero exige el token exacto.
 
 ### 5.5 Matriz de permisos
@@ -295,8 +329,10 @@ El parseo del header acepta `Bearer <token>` sin distinguir mayúsculas en el es
 | Operación                              | Anónimo | member | admin |
 | -------------------------------------- | ------- | ------ | ----- |
 | `POST /api/auth/login`                 | ✅      | ✅     | ✅    |
+| `POST /api/auth/register`              | ✅      | ✅     | ✅    |
 | `GET /health`                          | ✅      | ✅     | ✅    |
 | `GET /api/inventory/components`        | ❌ 401  | ✅     | ✅    |
+| `GET /api/inventory/locations`         | ❌ 401  | ✅     | ✅    |
 | `POST/PUT/DELETE /api/inventory/components` | ❌ 401 | ❌ 403 | ✅ |
 | `POST /api/inventory/import`           | ❌ 401  | ❌ 403 | ✅    |
 | `GET /api/groups`                      | ❌ 401  | ✅     | ✅    |
@@ -306,9 +342,9 @@ El parseo del header acepta `Bearer <token>` sin distinguir mayúsculas en el es
 
 ### 5.6 Consideraciones de seguridad
 
-- Los tokens estáticos no expiran. Para producción se recomienda JWT con `exp`, rotación y revocación.
-- No hay rate limiting en el login; añadir `express-rate-limit` o limitarlo en el reverse proxy.
-- Las contraseñas se comparan en texto plano contra variables de entorno. Si se migra a usuarios en base de datos, usar Argon2/bcrypt.
+- Los tokens de entorno son estáticos y no expiran; los usuarios registrados usan tokens aleatorios persistidos. Para producción se recomienda JWT con `exp`, rotación y revocación.
+- No hay rate limiting en login ni registro; añadir `express-rate-limit` o limitarlo en el reverse proxy.
+- Los usuarios registrados almacenan contraseñas con `scrypt` y sal aleatoria. Las cuentas de entorno se comparan contra variables; para producción se recomienda Argon2/bcrypt y una política de rotación.
 - Desplegar siempre detrás de TLS.
 
 ---
@@ -322,6 +358,7 @@ export interface HardwareComponent {
   id: string;
   name: string;
   category: string;
+  location: string;
   quantity: number;
   available: number;
 }
@@ -336,6 +373,7 @@ export interface HardwareComponent {
 | `id`        | string, trim, mínimo 1, regex `^[a-z0-9-]+$`              |
 | `name`      | string, trim, 1–120                                       |
 | `category`  | string, trim, 1–80                                        |
+| `location`  | string, trim, máximo 80, opcional (por defecto `""`)      |
 | `quantity`  | entero ≥ 0                                                |
 | `available` | entero ≥ 0                                                |
 
@@ -349,9 +387,29 @@ Regla cruzada (`refine`): `available <= quantity`, con error asociado al campo `
 | Handler          | Comportamiento                                                        |
 | ---------------- | --------------------------------------------------------------------- |
 | `listComponents` | `200 { data: [...] }`; errores van al middleware de errores.          |
+| `listLocations`  | `200 { data: [...] }` agrupado por `location`; requiere autenticación. |
 | `addComponent`   | `201 { data: componente }`.                                           |
 | `editComponent`  | `200 { data: componente }` o `404` si no existe.                      |
 | `removeComponent`| `204` sin body o `404` si no existe.                                  |
+
+### 6.3.1 Tabla de ubicaciones
+
+`findLocations()` lee todos los componentes ordenados por `location` y los agrupa en memoria para devolver:
+
+```ts
+export interface InventoryLocation {
+  location: string;
+  componentCount: number;
+  totalUnits: number;
+  availableUnits: number;
+  components: HardwareComponent[];
+}
+```
+
+- No se crea una tabla duplicada en PostgreSQL: la tabla de ubicación se deriva del inventario importado, por lo que siempre refleja el Excel.
+- Las ubicaciones vacías se agrupan bajo `""` (la UI las muestra como **Sin ubicación**).
+- `GET /api/inventory/locations` es de solo lectura y está disponible para `admin` y `member`.
+- Con `inventario.xlsx` real se generan 23 grupos: 22 ubicaciones físicas y un grupo **Sin ubicación** con 2 componentes.
 
 ### 6.4 Mapeo de errores de PostgreSQL
 
@@ -421,8 +479,8 @@ Flujo:
 3. Se recorre cada hoja hasta encontrar una con las cinco columnas obligatorias.
 4. Se detecta el formato:
 
-   - **Simple:** `id`, `name`, `category`, `quantity`, `available` (con alias ES/EN).
-   - **Inventario del club:** `ID`, `Nombre`, `Valor-Serial`, `Cantidad`, `Disponible`. En este caso `Nombre` se usa como categoría y `Valor-Serial` como nombre; `Ubicación`, `Ubicación H` y `Ubicación V` se leen pero no se persisten.
+   - **Simple:** `id`, `name`, `category`, `location`, `quantity`, `available` (con alias ES/EN).
+   - **Inventario del club:** `ID`, `Nombre`, `Valor-Serial`, `Cantidad`, `Disponible`. En este caso `Nombre` se usa como categoría y `Valor-Serial` como nombre. `Ubicación H` y `Ubicación V` se fusionan en `location` (`A` + `5` → `A5`); si ambas están vacías se usa `Ubicación` como respaldo.
 
 5. Se recorren las filas no vacías (máximo **5000**). En el formato del club, celdas como `--` en cantidades se interpretan como `0` y las filas sin texto se omiten.
 6. Se normalizan números y se validan con Zod (incluida la regla `available <= quantity` y la ausencia de `id` duplicados).
@@ -570,26 +628,28 @@ Actualmente no hay herramienta de migraciones. El esquema evoluciona con `CREATE
 | Estado       | Persistencia            | Propósito                                   |
 | ------------ | ----------------------- | ------------------------------------------- |
 | `components` | —                       | Lista del inventario.                       |
+| `locations`  | —                       | Tabla de ubicaciones agrupada por la API.   |
 | `groups`     | —                       | Lista de grupos.                            |
 | `projects`   | —                       | Lista de proyectos.                         |
 | `token`      | `localStorage`          | Token Bearer.                               |
 | `role`       | `localStorage`          | Rol para renderizado condicional.           |
-| `view`       | —                       | Pestaña activa: `inventory/groups/projects`.|
+| `view`       | —                       | Pestaña activa: `inventory/locations/groups/projects`. |
 | `error`      | —                       | Mensajes de error/estado.                   |
 | `notice`     | —                       | Confirmaciones de operaciones exitosas.     |
-| `login`      | —                       | Formulario de login.                        |
+| `login`      | —                       | Formulario de login/registro.               |
+| `authMode`   | —                       | Alterna entre `login` y `register`.         |
 
-Las vistas están separadas en `frontend/src/views/`: `InventoryView.tsx`, `GroupsView.tsx` y `ProjectsView.tsx`. Cada una mantiene su propio formulario y filtros locales.
+Las vistas están separadas en `frontend/src/views/`: `InventoryView.tsx`, `LocationsView.tsx`, `GroupsView.tsx` y `ProjectsView.tsx`. Cada una mantiene su propio formulario y filtros locales.
 
 ### 9.3 Flujos
 
-1. **Sin token** → pantalla de login.
-2. **Login exitoso** → guarda token/rol, `setToken` dispara el `useEffect` que carga inventario, grupos y proyectos en paralelo.
-3. **Carga** → `GET /api/inventory/components`, `GET /api/groups` y `GET /api/projects`; si recibe `401`, cierra sesión y muestra aviso.
+1. **Sin token** → pantalla de acceso; permite alternar entre login y registro.
+2. **Login/registro exitoso** → guarda token/rol, `setToken` dispara el `useEffect` que carga inventario, ubicaciones, grupos y proyectos en paralelo.
+3. **Carga** → `GET /api/inventory/components`, `GET /api/inventory/locations`, `GET /api/groups` y `GET /api/projects`; si recibe `401`, cierra sesión y muestra aviso.
 4. **Alta** (solo admin) → `POST` del recurso correspondiente; recarga todas las listas.
 5. **Borrado** (solo admin) → `DELETE`; recarga las listas. Si un grupo tiene proyectos, el backend responde `409` y la UI muestra el error.
 6. **Importación Excel** (solo admin) → `POST /api/inventory/import` con `FormData`; muestra filas procesadas y recarga.
-7. **Búsqueda** → filtrado local del inventario por id, nombre y categoría.
+7. **Búsqueda** → filtrado local del inventario por id, nombre, categoría y ubicación; la pestaña Ubicaciones filtra por ubicación/componente.
 8. **Logout** → limpia `localStorage`, estado y listas.
 
 ### 9.4 Cliente API (`api.ts`)
@@ -598,12 +658,12 @@ Las vistas están separadas en `frontend/src/views/`: `InventoryView.tsx`, `Grou
 - No envía `Content-Type: application/json` cuando el body es `FormData`.
 - Traduce `401` a `AUTH_REQUIRED` para que la UI cierre sesión.
 - Extrae `body.error` para mostrar mensajes del backend.
-- Expone `inventoryApi` (`list`, `create`, `update`, `remove`, `import`, `login`), `groupsApi` y `projectsApi` (`list`, `create`, `update`, `remove`).
-- Tipos compartidos: `Role`, `Component`, `Group`, `Project` y sus estados.
+- Expone `authApi` (`login`, `register`), `inventoryApi` (`list`, `locations`, `create`, `update`, `remove`, `import`), `groupsApi` y `projectsApi` (`list`, `create`, `update`, `remove`).
+- Tipos compartidos: `Role`, `Component`, `InventoryLocation`, `Group`, `Project` y sus estados.
 
 ### 9.5 Renderizado por rol
 
-- `member`: solo lectura y búsqueda en las tres pestañas.
+- `member`: solo lectura y búsqueda en las cuatro pestañas.
 - `admin`: además ve formularios de alta, importación Excel y botones de borrado.
 
 El backend siempre vuelve a validar el rol; ocultar botones es solo UX.
@@ -678,7 +738,7 @@ AUTH_ADMIN_* / AUTH_MEMBER_*
 npm test
 ```
 
-Ejecuta `node --import tsx --test test/*.test.ts` (actualmente 24 pruebas).
+Ejecuta `node --import tsx --test test/*.test.ts` (actualmente 26 pruebas).
 
 ### 11.2 Unitarias (`test/unit.test.ts`)
 
@@ -704,14 +764,16 @@ Casos cubiertos:
 1. `GET /health`.
 2. Preflight CORS.
 3. Login inválido/incompleto/admin/member.
-4. Rutas sin token, con token inválido.
-5. Lectura de datos semilla de inventario, grupos y proyectos por member.
-6. `403` para escrituras de member en los tres dominios y en la importación.
-7. Inventario: validación de cantidades/ids, `201`, `409`, `200`, `404`, `204`.
-8. Grupos: seed, `201`, duplicado `409`, `400` de validación, `PUT`, borrado `204` y `409` si tiene proyectos (`FK`).
-9. Proyectos: seed, `201`, `400` por grupo inexistente (`FK`) y fechas inválidas, `PUT`, `204`/`404`.
-10. Importación Excel: `403` para member, *upsert* de filas nuevas y existentes, reimportación idempotente, formato simple, formato del club (`ID/Nombre/Valor-Serial/Cantidad/Disponible`) con celdas `--` y filas vacías, columnas faltantes, fila inválida, extensión `.csv`, archivo ausente.
-11. JSON malformado `400` y ruta inexistente `404`.
+4. Registro: validación, rol `member` forzado aunque se envíe `role: admin`, duplicado/reservado `409`, login posterior y acceso con el token emitido.
+5. Rutas sin token, con token inválido.
+6. Lectura de datos semilla de inventario, ubicaciones, grupos y proyectos por member.
+7. `403` para escrituras de member en los tres dominios y en la importación.
+8. Inventario: validación de cantidades/ids, `201`, `409`, `200`, `404`, `204`.
+9. Ubicaciones: agrupación por `location`, conteos/unidades, detalle de componentes, `401` sin token y actualización tras importar el formato del club.
+10. Grupos: seed, `201`, duplicado `409`, `400` de validación, `PUT`, borrado `204` y `409` si tiene proyectos (`FK`).
+11. Proyectos: seed, `201`, `400` por grupo inexistente (`FK`) y fechas inválidas, `PUT`, `204`/`404`.
+12. Importación Excel: `403` para member, *upsert* de filas nuevas y existentes, reimportación idempotente, formato simple con `location`, formato del club (`ID/Nombre/Valor-Serial/Ubicación H + V/Cantidad/Disponible`) con celdas `--` y filas vacías, columnas faltantes, fila inválida, extensión `.csv`, archivo ausente.
+13. JSON malformado `400` y ruta inexistente `404`.
 
 ### 11.4 Validación manual con PostgreSQL real
 
@@ -720,11 +782,12 @@ Además de la suite automatizada se ejecutó:
 1. `npm run build` y `cd frontend && npm run build`.
 2. PostgreSQL 16 real (instancia embebida en el entorno de validación).
 3. `node dist/server.js` con variables reales.
-4. **39 comprobaciones HTTP**: health, CORS, login, roles, CRUD de inventario/grupos/proyectos, validaciones, duplicados, restricciones `FK` y errores `404`.
-5. Importación Excel real: creación/actualización de componentes, reimportación idempotente y rechazo de archivos/filas inválidas.
-6. Importación del archivo real `inventario.xlsx` (formato del club): **131 componentes** cargados, incluidas filas con `--` en cantidad y una fila vacía ignorada; reimportación idempotente.
-7. Persistencia: creación de grupo, proyecto y componente importado, `SIGTERM`, reinicio y verificación de que los datos seguían ahí y los seeds no se duplicaron.
-8. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
+4. **43 comprobaciones HTTP**: health, CORS, login, registro, roles, CRUD de inventario/grupos/proyectos, validaciones, duplicados, restricciones `FK` y errores `404`.
+5. **10 comprobaciones adicionales** contra PostgreSQL real + `inventario.xlsx`: registro/login de usuario nuevo, importación/reimportación de 131 componentes, ubicaciones fusionadas y `GET /api/inventory/locations` con **23 grupos** (22 ubicaciones + **Sin ubicación**), `A5` con 47 componentes y `A1`/`F4` verificados.
+6. Importación Excel real: creación/actualización de componentes, reimportación idempotente y rechazo de archivos/filas inválidas.
+7. Importación del archivo real `inventario.xlsx` (formato del club): **131 componentes** cargados, incluidas filas con `--` en cantidad y una fila vacía ignorada; reimportación idempotente.
+8. Persistencia: creación de grupo, proyecto y componente importado, `SIGTERM`, reinicio y verificación de que los datos seguían ahí y los seeds no se duplicaron.
+9. `npm run dev` con `.env` real: confirmó la carga de entorno y la resolución `.ts` del loader.
 
 Resultado: **todo en verde**.
 
@@ -827,16 +890,17 @@ La API `PUT` ya existe y está probada. Para la UI:
 | Manifiestos + import dinámico | Módulos desacoplados y cargables sin tocar el núcleo. |
 | Zod para validación | Esquemas declarativos, mensajes y `details` consistentes. |
 | Pool perezoso + `setPool` | Entorno cargado antes de conectar y pruebas sin PostgreSQL. |
-| Tokens por entorno | Simplicidad para un club; sin infraestructura de usuarios. |
+| Tokens de entorno + tokens persistidos | Simplicidad para cuentas base y registro sin infraestructura extra. |
+| Tabla de ubicación derivada | Evita duplicar datos y refleja siempre el último Excel importado. |
 | CORS manual | Una sola dependencia menos y control explícito. |
 | `pg-mem` en pruebas | Rápido, sin servicios externos, misma capa de acceso a datos. |
 
 ### 14.2 Limitaciones
 
-- Tokens estáticos sin expiración.
+- Tokens sin expiración ni revocación automática.
 - Sin rate limiting.
-- Sin refresh tokens ni revocación.
-- Sin tabla de usuarios ni hashes.
+- Sin refresh tokens.
+- Las cuentas de entorno siguen usando contraseñas en variables; los usuarios registrados usan `scrypt`.
 - Sin migraciones versionadas.
 - Sin pruebas de UI.
 - Sin paginación en el listado (aceptable para un club pequeño).

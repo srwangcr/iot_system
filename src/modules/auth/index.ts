@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import type { IModule, ModuleContext } from "../../core/module.js";
 import { assertAuthConfiguration } from "./accounts.js";
+import { initializeAuthDatabase } from "./database.js";
 import { createAuthRoutes } from "./routes.js";
 
 const authModule: IModule = {
@@ -9,8 +10,9 @@ const authModule: IModule = {
   registerRoutes(app: Express): void {
     app.use("/api/auth", createAuthRoutes());
   },
-  registerHooks(_context: ModuleContext): void {
+  async registerHooks(_context: ModuleContext): Promise<void> {
     assertAuthConfiguration();
+    await initializeAuthDatabase();
   },
 };
 

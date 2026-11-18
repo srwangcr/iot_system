@@ -1,10 +1,16 @@
+import { hasPool } from "../../core/database.js";
+import { findUserByToken } from "./database.js";
+
 export type Role = "admin" | "member";
 
-export interface Account {
+export interface SessionAccount {
   readonly role: Role;
   readonly username: string;
-  readonly password: string;
   readonly token: string;
+}
+
+export interface Account extends SessionAccount {
+  readonly password: string;
 }
 
 interface AccountDefinition {
@@ -81,8 +87,26 @@ function extractBearerToken(authorization: string | undefined): string | undefin
   return token.length > 0 ? token : undefined;
 }
 
-export function findAccountByAuthorization(authorization: string | undefined): Account | undefined {
+/**
+ * Resolves a bearer token against the static environment accounts first and
+ * then against registered users. Environment tokens stay valid even when the
+ * users table cannot be queried, while registered users only require the
+ * database that already backs the rest of the system.
+ */
+export async function findAccountByAuthorization(
+  authorization: string | undefined,
+): Promise<SessionAccount | undefined> {
   const token = extractBearerToken(authorization);
   if (!token) return undefined;
-  return getAccounts().find((account) => account.token === token);
+
+  const envAccount = getAccounts().find((account) => account.token === token);
+  if (envAccount) return envAccount;
+  if (!hasPool()) return undefined;
+
+  try {
+    return (await findUserByToken(token)) ?? undefined;
+  } catch (error) {
+    console.error("Could not resolve registered user token", error);
+    return undefined;
+  }
 }

@@ -5,6 +5,7 @@ import {
   editComponent,
   importComponents,
   listComponents,
+  listLocations,
   removeComponent,
 } from "./controller.js";
 import { requireAuth, requireRole } from "../auth/middleware.js";
@@ -49,6 +50,7 @@ function uploadSingleWorkbook(
 
 export function registerInventoryRoutes(app: Express): void {
   app.get("/api/inventory/components", requireAuth, listComponents);
+  app.get("/api/inventory/locations", requireAuth, listLocations);
   app.post("/api/inventory/components", requireRole("admin"), addComponent);
   app.put("/api/inventory/components/:id", requireRole("admin"), editComponent);
   app.delete("/api/inventory/components/:id", requireRole("admin"), removeComponent);

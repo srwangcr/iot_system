@@ -35,5 +35,9 @@ textarea { resize: vertical; }
 .badge.neutral { background: #e8efee; color: #52666b; }
 .badge.info { background: #dcecff; color: #235c9e; }
 .badge.danger { background: #ffe1e1; color: #9b3030; }
+.location-detail { white-space: normal; background: #f8fbfa; }
+.location-components { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0; }
+.location-chip { background: white; border: 1px solid #e2e9e8; border-radius: 10px; padding: 8px 10px; font-size: .85rem; }
+.location-chip small { margin-top: 2px; }
 @media (max-width: 800px) { .tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; } .tab { flex: 0 0 auto; } }
 

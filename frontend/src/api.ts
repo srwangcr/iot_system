@@ -6,8 +6,17 @@ export interface Component {
   id: string;
   name: string;
   category: string;
+  location: string;
   quantity: number;
   available: number;
+}
+
+export interface InventoryLocation {
+  location: string;
+  componentCount: number;
+  totalUnits: number;
+  availableUnits: number;
+  components: Component[];
 }
 
 export type GroupStatus = "active" | "inactive";
@@ -56,9 +65,26 @@ const jsonAuthHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
 });
 
+export const authApi = {
+  login: (username: string, password: string) =>
+    request<{ data: { token: string; role: string; username: string } }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  register: (username: string, password: string) =>
+    request<{ data: { token: string; role: string; username: string } }>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+};
+
 export const inventoryApi = {
   list: (token: string) =>
     request<{ data: Component[] }>("/api/inventory/components", { headers: authHeaders(token) }),
+  locations: (token: string) =>
+    request<{ data: InventoryLocation[] }>("/api/inventory/locations", {
+      headers: authHeaders(token),
+    }),
   create: (component: Component, token: string) =>
     request<{ data: Component }>("/api/inventory/components", {
       method: "POST",
@@ -85,11 +111,6 @@ export const inventoryApi = {
       headers: authHeaders(token),
     });
   },
-  login: (username: string, password: string) =>
-    request<{ data: { token: string; role: string; username: string } }>("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    }),
 };
 
 export const groupsApi = {

@@ -149,6 +149,64 @@ test("API end-to-end", async (t) => {
       assert.equal((memberLogin.body.data as { role: string }).role, "member");
     });
 
+    await t.test("registration creates member accounts and logs them in", async () => {
+      const invalid = await api("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "ab", password: "short" }),
+      });
+      assert.equal(invalid.response.status, 400);
+
+      const registered = await api("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: "nuevo.miembro",
+          password: "super-secret-123",
+          role: "admin",
+        }),
+      });
+      assert.equal(registered.response.status, 201);
+      const session = registered.body.data as { token: string; role: string; username: string };
+      assert.equal(session.role, "member");
+      assert.equal(session.username, "nuevo.miembro");
+      assert.match(session.token, /^[a-f0-9]{64}$/);
+
+      const duplicate = await api("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "nuevo.miembro", password: "another-secret-123" }),
+      });
+      assert.equal(duplicate.response.status, 409);
+
+      const reserved = await api("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "another-secret-123" }),
+      });
+      assert.equal(reserved.response.status, 409);
+
+      const loggedIn = await api("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "nuevo.miembro", password: "super-secret-123" }),
+      });
+      assert.equal(loggedIn.response.status, 200);
+      assert.equal((loggedIn.body.data as { token: string }).token, session.token);
+
+      const wrongPassword = await api("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "nuevo.miembro", password: "wrong-password" }),
+      });
+      assert.equal(wrongPassword.response.status, 401);
+
+      const protectedList = await api("/api/inventory/components", {
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      assert.equal(protectedList.response.status, 200);
+    });
+
     await t.test("protected routes require a valid bearer token", async () => {
       const anonymous = await api("/api/inventory/components");
       assert.equal(anonymous.response.status, 401);
@@ -170,6 +228,29 @@ test("API end-to-end", async (t) => {
         ["dht22", "esp32-devkit", "raspberry-pi-4"],
       );
       assert.ok(items.every((item) => item.available <= item.quantity));
+    });
+
+    await t.test("locations are grouped from the inventory", async () => {
+      const { response, body } = await api("/api/inventory/locations", {
+        headers: memberHeaders,
+      });
+      assert.equal(response.status, 200);
+      const groups = body.data as Array<{
+        location: string;
+        componentCount: number;
+        totalUnits: number;
+        availableUnits: number;
+        components: Array<{ id: string }>;
+      }>;
+      assert.deepEqual(groups.map((group) => group.location), ["A1", "A2", "B1"]);
+      const a1 = groups.find((group) => group.location === "A1");
+      assert.equal(a1?.componentCount, 1);
+      assert.equal(a1?.components[0]?.id, "esp32-devkit");
+      assert.equal(a1?.totalUnits, 12);
+      assert.equal(a1?.availableUnits, 8);
+
+      const anonymous = await api("/api/inventory/locations");
+      assert.equal(anonymous.response.status, 401);
     });
 
     await t.test("members cannot create, update or delete components", async () => {
@@ -237,6 +318,7 @@ test("API end-to-end", async (t) => {
         id: "arduino-uno",
         name: "Arduino Uno",
         category: "microcontroller",
+        location: "C1",
         quantity: 5,
         available: 5,
       };
@@ -262,12 +344,14 @@ test("API end-to-end", async (t) => {
         body: JSON.stringify({
           name: "Arduino Uno R3",
           category: "microcontroller",
+          location: "C2",
           quantity: 7,
           available: 6,
         }),
       });
       assert.equal(updated.response.status, 200);
       assert.equal((updated.body.data as { name: string }).name, "Arduino Uno R3");
+      assert.equal((updated.body.data as { location: string }).location, "C2");
 
       const missing = await api("/api/inventory/components/does-not-exist", {
         method: "PUT",
@@ -488,9 +572,9 @@ test("API end-to-end", async (t) => {
 
     await t.test("admins can import and upsert inventory from Excel", async () => {
       const buffer = await workbookBuffer([
-        ["id", "name", "category", "quantity", "available"],
-        ["dht22", "DHT22 actualizado", "sensor", 30, 20],
-        ["e2e-sensor", "Sensor E2E", "sensor", 5, 3],
+        ["id", "name", "category", "location", "quantity", "available"],
+        ["dht22", "DHT22 actualizado", "sensor", "D1", 30, 20],
+        ["e2e-sensor", "Sensor E2E", "sensor", "D2", 5, 3],
       ]);
 
       const imported = await api("/api/inventory/import", {
@@ -505,11 +589,13 @@ test("API end-to-end", async (t) => {
       const items = list.body.data as Array<{
         id: string;
         name: string;
+        location: string;
         quantity: number;
         available: number;
       }>;
       const dht22 = items.find((item) => item.id === "dht22");
       assert.equal(dht22?.name, "DHT22 actualizado");
+      assert.equal(dht22?.location, "D1");
       assert.equal(dht22?.quantity, 30);
       assert.equal(items.filter((item) => item.id === "e2e-sensor").length, 1);
 
@@ -561,6 +647,7 @@ test("API end-to-end", async (t) => {
           id: string;
           name: string;
           category: string;
+          location: string;
           quantity: number;
           available: number;
         }>;
@@ -570,6 +657,7 @@ test("API end-to-end", async (t) => {
         id: "9001",
         name: "1k",
         category: "Resistencia",
+        location: "A5",
         quantity: 20,
         available: 18,
       });
@@ -578,6 +666,7 @@ test("API end-to-end", async (t) => {
         id: "9002",
         name: "Pinzas Caiman",
         category: "Pinzas Caiman",
+        location: "A1",
         quantity: 0,
         available: 0,
       });
@@ -594,6 +683,17 @@ test("API end-to-end", async (t) => {
       const items = list.body.data as Array<{ id: string }>;
       assert.equal(items.filter((item) => item.id === "9001").length, 1);
       assert.equal(items.filter((item) => item.id === "9002").length, 1);
+
+      const locations = await api("/api/inventory/locations", { headers: memberHeaders });
+      assert.equal(locations.response.status, 200);
+      const locationGroups = locations.body.data as Array<{
+        location: string;
+        components: Array<{ id: string; location: string }>;
+      }>;
+      const a5 = locationGroups.find((group) => group.location === "A5");
+      assert.ok(a5?.components.some((component) => component.id === "9001"));
+      const a1 = locationGroups.find((group) => group.location === "A1");
+      assert.ok(a1?.components.some((component) => component.id === "9002"));
 
       for (const id of ["9001", "9002"]) {
         await api(`/api/inventory/components/${id}`, {

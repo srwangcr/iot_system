@@ -10,11 +10,13 @@ El repositorio quedó reparado tras un `revert` que había dejado marcadores de 
 
 - Arquitectura modular: cada módulo (`auth`, `inventory`, `groups`, `projects`) se descubre y carga desde su `manifest.json`.
 - Autenticación por token Bearer con dos roles: `admin` y `member`.
-- CRUD de componentes de inventario con validación de datos.
+- Registro público de nuevos usuarios (rol `member`) con contraseñas hasheadas (`scrypt`), además de las cuentas administrador/miembro definidas por entorno.
+- CRUD de componentes de inventario con validación de datos y ubicación física única.
+- Tabla de ubicaciones derivada del inventario importado, agrupada por `location` con sus componentes, unidades y disponibilidad.
 - Importación de inventario desde Excel (`.xlsx`) con *upsert* transaccional.
 - CRUD de grupos de trabajo y de proyectos asociados a un grupo (clave foránea con `ON DELETE RESTRICT`).
 - Datos iniciales (seed) automáticos la primera vez que se crea cada tabla.
-- Frontend React con inicio de sesión, pestañas de Inventario/Grupos/Proyectos, búsqueda, estadísticas, tablas y formularios para administradores.
+- Frontend React con inicio de sesión/registro, pestañas de Inventario/Ubicaciones/Grupos/Proyectos, búsqueda, estadísticas, tablas y formularios para administradores.
 - CORS configurable, manejo centralizado de errores, healthchecks y apagado ordenado.
 - Docker multi-stage para API y frontend, con PostgreSQL en Docker Compose.
 - Pruebas unitarias, de integración y end-to-end automatizadas.
@@ -153,7 +155,7 @@ Credenciales por defecto (cámbialas en `.env`):
 | `AUTH_MEMBER_TOKEN`    | Sí          | Token Bearer del miembro.                                          |
 | `VITE_API_URL`         | No          | URL de la API usada al compilar el frontend.                       |
 
-La API **falla al arrancar** si falta cualquier `AUTH_*` o si ambos roles comparten token. Esto evita emitir sesiones que luego no pueden validarse.
+La API **falla al arrancar** si falta cualquier `AUTH_*` o si ambos roles comparten token. Esto evita emitir sesiones que luego no pueden validarse. Los usuarios registrados desde la aplicación se guardan en la tabla `users`; sus tokens son aleatorios y se validan contra la base de datos.
 
 ---
 
@@ -202,13 +204,30 @@ Las rutas protegidas esperan:
 Authorization: Bearer <token>
 ```
 
+#### Registro de usuarios
+
+```http
+POST /api/auth/register
+Content-Type: application/json
+
+{ "username": "nuevo.miembro", "password": "minimo-8-caracteres" }
+```
+
+- El registro es público y siempre crea una cuenta con rol `member`; cualquier campo `role` enviado se ignora.
+- `username`: 3–60 caracteres (`letras`, números, `.`, `-`, `_`); no puede coincidir con una cuenta de entorno ni con otro usuario.
+- `password`: mínimo 8 caracteres. Se almacena como hash `scrypt` con sal aleatoria.
+- Respuesta `201` con `{ token, role, username }`; el token permite usar la API de inmediato.
+- `409` si el usuario ya existe.
+
 ### 7.2 Endpoints
 
 | Método   | Ruta                             | Rol requerido | Descripción                         |
 | -------- | -------------------------------- | ------------- | ----------------------------------- |
 | `GET`    | `/health`                        | —             | Estado de la API.                   |
 | `POST`   | `/api/auth/login`                | —             | Inicio de sesión.                   |
+| `POST`   | `/api/auth/register`             | —             | Registro público de un miembro.     |
 | `GET`    | `/api/inventory/components`      | admin/member  | Lista componentes ordenados por nombre. |
+| `GET`    | `/api/inventory/locations`       | admin/member  | Tabla de ubicaciones agrupada desde el inventario. |
 | `POST`   | `/api/inventory/components`      | admin         | Crea un componente.                 |
 | `PUT`    | `/api/inventory/components/:id`  | admin         | Actualiza un componente.            |
 | `DELETE` | `/api/inventory/components/:id`  | admin         | Elimina un componente.              |
@@ -233,18 +252,25 @@ curl -X POST http://localhost:3000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"change-me-in-production"}'
 
+curl -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"nuevo.miembro","password":"minimo-8-caracteres"}'
+
 curl http://localhost:3000/api/inventory/components \
+  -H "Authorization: Bearer $TOKEN"
+
+curl http://localhost:3000/api/inventory/locations \
   -H "Authorization: Bearer $TOKEN"
 
 curl -X POST http://localhost:3000/api/inventory/components \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"id":"arduino-uno","name":"Arduino Uno","category":"microcontroller","quantity":5,"available":5}'
+  -d '{"id":"arduino-uno","name":"Arduino Uno","category":"microcontroller","location":"C1","quantity":5,"available":5}'
 
 curl -X PUT http://localhost:3000/api/inventory/components/arduino-uno \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Arduino Uno R3","category":"microcontroller","quantity":7,"available":6}'
+  -d '{"name":"Arduino Uno R3","category":"microcontroller","location":"C2","quantity":7,"available":6}'
 
 curl -X DELETE http://localhost:3000/api/inventory/components/arduino-uno \
   -H "Authorization: Bearer $TOKEN"
@@ -278,6 +304,7 @@ Formato del Excel de importación:
 | `id` | `id`, `codigo`, `code` |
 | `name` | `name`, `nombre`, `componente` |
 | `category` | `category`, `categoria` |
+| `location` | `location`, `ubicacion`, `localizacion` |
 | `quantity` | `quantity`, `cantidad`, `total`, `stock` |
 | `available` | `available`, `disponible`, `disponibles` |
 
@@ -288,10 +315,13 @@ Formato del Excel de importación:
 | `ID` | `id` (se normaliza a minúsculas/guiones) |
 | `Nombre` | `category` |
 | `Valor-Serial` | `name` (si es `--`, `---` o similar, se usa `Nombre`) |
+| `Ubicación H` + `Ubicación V` | `location` (se fusionan: `A` + `5` → `A5`) |
+| `Ubicación` | `location` (solo si H y V están vacías) |
 | `Cantidad` | `quantity` |
 | `Disponible` | `available` |
 
-- Las columnas `Ubicación`, `Ubicación H` y `Ubicación V` se leen pero no se almacenan porque el modelo actual no tiene campos de ubicación.
+- La ubicación se guarda en un único campo `location`. Si el Excel solo trae `Ubicación`, se usa tal cual; si trae `Ubicación H` y `Ubicación V`, se concatenan (sin espacio cuando H es una sola letra).
+- La pestaña **Ubicaciones** y `GET /api/inventory/locations` generan la tabla de ubicación directamente desde los componentes importados: agrupan por `location`, suman unidades/disponibles y listan los componentes de cada ubicación. Las filas sin ubicación aparecen como **Sin ubicación**.
 - En el formato del club, cantidades no numéricas como `--` se importan como `0`.
 - Las filas totalmente vacías se ignoran.
 - La importación es un *upsert* por `id` dentro de una transacción: crea filas nuevas y actualiza las existentes.
@@ -323,10 +353,20 @@ CREATE TABLE inventory_components (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   category   TEXT NOT NULL,
+  location   TEXT NOT NULL DEFAULT '',
   quantity   INTEGER NOT NULL CHECK (quantity >= 0),
   available  INTEGER NOT NULL CHECK (available >= 0 AND available <= quantity),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE users (
+  id            TEXT PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+  token         TEXT NOT NULL UNIQUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE groups (
@@ -355,11 +395,14 @@ CREATE TABLE projects (
 );
 ```
 
+La tabla de ubicación no se duplica en PostgreSQL: se calcula agrupando `inventory_components.location` para que siempre coincida con el inventario importado.
+
 Reglas de validación en la API:
 
 - `id`: obligatorio, minúsculas, números y guiones (`^[a-z0-9-]+$`), máximo 80 caracteres.
 - `name`: 1–120 caracteres.
 - `category`: 1–80 caracteres.
+- `location`: opcional, máximo 80 caracteres; se guarda como un único valor (por ejemplo `A5`).
 - `quantity` y `available`: enteros ≥ 0; `available <= quantity`.
 - `groups.memberCount`: entero entre 0 y 10000; `status`: `active` o `inactive`.
 - `projects.groupId`: debe existir en `groups`; `status`: `planned`, `active`, `paused`, `completed` o `cancelled`.
@@ -387,7 +430,7 @@ Si una tabla está vacía, se insertan datos de ejemplo:
 │   │   ├── module.ts              # Contrato IModule y ModuleContext
 │   │   └── moduleLoader.ts        # Descubrimiento y validación de módulos
 │   └── modules/
-│       ├── auth/                  # Cuentas, login y middleware de roles
+│       ├── auth/                  # Cuentas, registro, login y middleware de roles
 │       ├── inventory/             # CRUD de componentes + importador Excel
 │       ├── groups/                # CRUD de grupos de trabajo
 │       └── projects/              # CRUD de proyectos ligados a grupos
@@ -395,7 +438,7 @@ Si una tabla está vacía, se insertan datos de ejemplo:
 │   ├── src/
 │   │   ├── App.tsx                # Autenticación, pestañas y estado global
 │   │   ├── api.ts                 # Cliente API tipado
-│   │   └── views/                 # Vistas de inventario, grupos y proyectos
+│   │   └── views/                 # Vistas de inventario, ubicaciones, grupos y proyectos
 │   ├── nginx.conf                 # SPA + cabeceras de seguridad
 │   └── Dockerfile
 ├── test/                          # Pruebas unitarias y end-to-end
@@ -414,7 +457,7 @@ Si una tabla está vacía, se insertan datos de ejemplo:
 npm test
 ```
 
-Cobertura actual (24 pruebas):
+Cobertura actual (26 pruebas):
 
 - **Unitarias**
   - Validación de manifiestos de módulos.
@@ -425,19 +468,22 @@ Cobertura actual (24 pruebas):
 - **End-to-end de API** (Express real + PostgreSQL en memoria `pg-mem`)
   - Healthcheck y preflight CORS.
   - Login inválido, incompleto, admin y member.
+  - Registro público: validación, rol `member` forzado, usuario duplicado/reservado, login posterior y acceso con el token emitido.
   - Protección de rutas y distinción `401` / `403`.
-  - Inventario: datos semilla, creación, duplicados, actualización, borrado y `404`.
+  - Inventario: datos semilla, creación, duplicados, actualización, borrado, `404` y ubicación.
+  - Ubicaciones: agrupación por `location`, conteos/unidades, detalle de componentes, protección `401` y actualización tras la importación Excel.
   - Grupos: datos semilla, CRUD, validación y bloqueo de borrado con proyectos (`FK`).
   - Proyectos: datos semilla, CRUD, validación de fechas y de grupo existente (`FK`).
-  - Importación Excel: permisos, *upsert* idempotente, formato simple, formato del club (`ID/Nombre/Valor-Serial/Cantidad/Disponible`), columnas faltantes, filas inválidas, extensión incorrecta y archivo ausente.
+  - Importación Excel: permisos, *upsert* idempotente, formato simple con `location`, formato del club (`ID/Nombre/Valor-Serial/Ubicación H + V/Cantidad/Disponible`), columnas faltantes, filas inválidas, extensión incorrecta y archivo ausente.
   - JSON malformado y rutas inexistentes.
 
 Además se validó manualmente el flujo completo con:
 
 - `npm run build` + `node dist/server.js`.
 - Una instancia **real de PostgreSQL 16**.
-- 39 comprobaciones end-to-end: login, CRUD, roles, grupos, proyectos, restricciones `FK`, importación Excel, CORS, persistencia tras reinicio y apagado con `SIGTERM`.
-- Importación del archivo real `inventario.xlsx`: **131 componentes** cargados, reimportación idempotente y verificación de filas con cantidad `--`.
+- 43 comprobaciones end-to-end: login, registro, CRUD, roles, grupos, proyectos, restricciones `FK`, importación Excel, CORS, persistencia tras reinicio y apagado con `SIGTERM`.
+- 10 comprobaciones específicas de registro + tabla de ubicaciones contra PostgreSQL real y el archivo `inventario.xlsx`: **23 ubicaciones** (incluida **Sin ubicación** con 2 componentes), `A5` con 47 componentes y ubicaciones fusionadas (`A1`, `A5`, `F4`).
+- Importación del archivo real `inventario.xlsx`: **131 componentes** cargados, reimportación idempotente, ubicaciones fusionadas (`A` + `5` → `A5`) y verificación de filas con cantidad `--`.
 - `npm run dev` con carga automática de `.env` y resolución de módulos `.ts`.
 
 ---
@@ -455,10 +501,10 @@ Además se validó manualmente el flujo completo con:
 
 Limitaciones conocidas y siguientes pasos recomendados:
 
-- Los tokens son estáticos (definidos por entorno); para producción se recomienda JWT con expiración y rotación.
-- No hay rate limiting en `/api/auth/login`.
+- Los tokens de las cuentas de entorno son estáticos; los usuarios registrados reciben un token aleatorio persistido. Para producción se recomienda JWT con expiración y rotación.
+- No hay rate limiting en `/api/auth/login` ni en `/api/auth/register`.
 - No hay HTTPS en el proyecto; debe terminarse TLS en un proxy/ingress.
-- Las contraseñas se comparan en texto plano contra variables de entorno; usar hashes (Argon2/bcrypt) si se migra a usuarios en base de datos.
+- Las cuentas de entorno siguen comparando su contraseña contra variables; los usuarios registrados usan hash `scrypt` con sal aleatoria. Para producción se recomienda Argon2/bcrypt y política de rotación.
 - No hay migraciones versionadas; el esquema se crea con `CREATE TABLE IF NOT EXISTS`.
 - El frontend permite crear y eliminar componentes, grupos y proyectos, pero no editarlos (las rutas `PUT` sí están disponibles y probadas).
 
@@ -493,4 +539,6 @@ Limitaciones conocidas y siguientes pasos recomendados:
 11. **Nuevo módulo `groups`**: CRUD de grupos de trabajo con validación, seed y permisos por rol.
 12. **Nuevo módulo `projects`**: CRUD de proyectos con relación a grupos, validación de fechas/estados, seed y borrado restringido por `FK`.
 13. **Frontend ampliado**: pestañas de Inventario, Grupos y Proyectos, formularios de alta, importación Excel y estadísticas por sección.
+14. **Registro activado**: `POST /api/auth/register` crea usuarios `member` con contraseña hasheada (`scrypt`), token aleatorio y validación contra usuarios existentes/cuentas de entorno. La pantalla de acceso permite alternar entre login y registro.
+15. **Ubicación unificada y tabla de ubicaciones**: el inventario usa un solo campo `location`; el importador fusiona `Ubicación H` + `Ubicación V` (`A` + `5` → `A5`) y usa `Ubicación` como respaldo. Se añadió la pestaña **Ubicaciones** y `GET /api/inventory/locations`, que generan la tabla agrupada por ubicación desde el inventario importado, con búsqueda, conteos y detalle de componentes.
 14. Añadida la suite de pruebas (23) y actualizada esta documentación.

@@ -21,6 +21,15 @@ export function setPool(next: Pool | undefined): void {
   pool = next;
 }
 
+/**
+ * Tells whether a pool has already been created or injected. Authentication
+ * uses this to avoid opening a connection just to validate an environment
+ * token in contexts (unit tests) where no database is available.
+ */
+export function hasPool(): boolean {
+  return pool !== undefined;
+}
+
 export async function closePool(): Promise<void> {
   const current = pool;
   pool = undefined;
