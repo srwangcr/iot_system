@@ -79,6 +79,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
+> Si tu sistema usa el comando antiguo `docker-compose` (v1) y aparece
+> `KeyError: 'ContainerConfig'` al recrear `api`, usa `docker compose` (v2)
+> instalando `docker-compose-plugin`, o fuerza el builder clásico:
+> `DOCKER_BUILDKIT=0 docker-compose up -d --build`. No borres el volumen
+> `postgres_data`: el error es de metadatos de Docker, no de la base de datos.
+
 Servicios:
 
 | Servicio   | URL                          |
@@ -95,7 +101,59 @@ Credenciales por defecto (cámbialas en `.env`):
 | admin  | `admin`  | `change-me-in-production`  |
 | member | `member` | `change-me-in-production`  |
 
-### 4.2 En local
+### 4.2 Cloudflare Tunnel (HTTPS sin abrir puertos)
+
+El overlay `docker-compose.cloudflared.yml` añade el conector `cloudflared` a la misma red de Docker, así que puede hablar con `frontend:80` y `api:3000` sin publicar puertos extra. El `docker-compose.yml` base todavía mapea 3000/8080: si quieres acceder **solo** por el túnel, cambia esos `ports` a `127.0.0.1:3000:3000` / `127.0.0.1:8080:80` o elimínalos (el túnel sigue funcionando porque usa la red interna).
+
+1. En **Cloudflare Zero Trust → Networks → Tunnels**, crea un túnel (tipo Docker) y copia el token de Docker que muestra el asistente.
+2. En la pestaña **Routes** del túnel, selecciona **Add route → Published application** (en versiones anteriores del panel se llama *Public Hostnames*). Añade dos rutas con un solo dominio:
+
+   | Orden | Hostname              | Path  | Service | URL          |
+   | ----- | --------------------- | ----- | ------- | ------------ |
+   | 1     | `iot.tudominio.com`   | `/api`| HTTP    | `api:3000`   |
+   | 2     | `iot.tudominio.com`   | —     | HTTP    | `frontend:80`|
+
+   La regla `/api` debe ir **antes** de la regla general. Cloudflare no quita ni reescribe el path: `/api/inventory/components` llega a `api:3000/api/inventory/components`. Así el navegador llama a `https://iot.tudominio.com/api/...` (mismo origen) y no hay problemas de CORS ni de *mixed content*.
+
+3. Configura `.env`:
+
+   ```bash
+   VITE_API_URL=https://iot.tudominio.com
+   FRONTEND_ORIGIN=https://iot.tudominio.com
+   CLOUDFLARE_TUNNEL_TOKEN=<token-del-túnel>
+   ```
+
+   `VITE_API_URL` se guarda dentro del bundle del frontend en tiempo de build; por eso hay que reconstruir el frontend al cambiarlo.
+
+4. Arranca todo:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.cloudflared.yml up -d --build
+   ```
+
+   Con `docker-compose` v1, usa el builder clásico para evitar el error `ContainerConfig`:
+
+   ```bash
+   DOCKER_BUILDKIT=0 docker-compose -f docker-compose.yml -f docker-compose.cloudflared.yml up -d --build
+   ```
+
+5. Verifica:
+
+   ```bash
+   curl -I https://iot.tudominio.com
+   curl https://iot.tudominio.com/api/inventory/components   # debe responder 401 JSON
+   ```
+
+Si prefieres dos hostnames, por ejemplo `iot.tudominio.com` → `frontend:80` e `iot-api.tudominio.com` → `api:3000`, deja la regla `/api` sin configurar y usa:
+
+```bash
+VITE_API_URL=https://iot-api.tudominio.com
+FRONTEND_ORIGIN=https://iot.tudominio.com
+```
+
+En ese caso la API responderá el preflight CORS al origen del frontend.
+
+### 4.3 En local
 
 1. Crea la base de datos:
 
@@ -445,7 +503,8 @@ Si una tabla está vacía, se insertan datos de ejemplo:
 ├── docs/DOCUMENTACION-TECNICA.md  # Documentación técnica detallada
 ├── scripts/copy-manifests.cjs     # Copia manifiestos a dist/
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml             # Stack base: API + frontend + PostgreSQL
+├── docker-compose.cloudflared.yml # Overlay opcional del túnel
 └── .env.example
 ```
 
@@ -520,6 +579,10 @@ Limitaciones conocidas y siguientes pasos recomendados:
 | El frontend muestra error de CORS                              | Ajusta `FRONTEND_ORIGIN` al origen real del navegador y recompila si cambió `VITE_API_URL`. |
 | `npm run dev` no encuentra `index.js`                          | El loader resuelve automáticamente `index.ts` en desarrollo; verifica el nombre del entry en `manifest.json`. |
 | El build de Docker falla en `copy-manifests`                   | El `Dockerfile` debe copiar `scripts/`; ya está corregido en este repositorio.    |
+| `docker-compose` v1: `KeyError: 'ContainerConfig'` al recrear `api` | Incompatibilidad entre Compose 1.29 y BuildKit. Usa `docker compose` v2 o `DOCKER_BUILDKIT=0 docker-compose up -d --build`; si hace falta, `docker-compose rm -f api` antes de volver a crear el contenedor. |
+| Cloudflare Tunnel devuelve `502`                                 | Revisa `docker compose logs cloudflared`, que el token sea correcto y que los *Public Hostnames* apunten a `frontend:80` y `api:3000` (dentro de la red de Compose). |
+| La web cargada por el túnel no llama a la API                    | `VITE_API_URL` se compila en el frontend: usa `https://<dominio>` con la regla `/api`, o la URL pública de la API si usas dos hostnames, y reconstruye el frontend. Revisa también `FRONTEND_ORIGIN`. |
+| `/api/...` devuelve HTML (el `index.html`) en vez de JSON        | Falta la ruta `/api` → `api:3000` o está después de la ruta general. Nginx sirve el SPA para cualquier path, así que la petición acaba en el frontend. |
 | `EADDRINUSE`                                                   | Otro proceso usa `PORT`; cámbialo o detén el proceso anterior.                   |
 
 ---

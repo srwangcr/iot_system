@@ -1,0 +1,17 @@
+# Overlay opcional para publicar el stack detrás de un Cloudflare Tunnel.
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.cloudflared.yml up -d --build
+#
+# Antes de ejecutarlo, define CLOUDFLARE_TUNNEL_TOKEN en .env y configura los
+# Public Hostnames del túnel en Cloudflare Zero Trust (ver README.md).
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: iot_system_cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy

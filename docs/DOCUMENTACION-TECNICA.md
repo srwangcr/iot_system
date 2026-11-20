@@ -722,6 +722,21 @@ AUTH_ADMIN_* / AUTH_MEMBER_*
 
 > En un despliegue real, `VITE_API_URL` y `FRONTEND_ORIGIN` deben apuntar al dominio público, no a `localhost`.
 
+#### Cloudflare Tunnel
+
+El overlay `docker-compose.cloudflared.yml` añade un servicio `cloudflared` a la misma red de Compose. El túnel se crea en **Zero Trust → Networks → Tunnels** (tipo Docker) y su token se pasa como `CLOUDFLARE_TUNNEL_TOKEN`. Los *Public Hostnames* se configuran en el panel de Cloudflare:
+
+- `iot.tudominio.com/api` → `HTTP api:3000` (regla específica, evaluada primero; Cloudflare no quita el prefijo `/api`).
+- `iot.tudominio.com` → `HTTP frontend:80` (regla general).
+
+Con ese esquema el navegador usa un único origen: `VITE_API_URL=https://iot.tudominio.com` y `FRONTEND_ORIGIN=https://iot.tudominio.com`, sin CORS ni *mixed content*. Alternativamente se pueden usar dos hostnames (`iot` para el frontend e `iot-api` para la API), configurando CORS con `FRONTEND_ORIGIN`. Como `VITE_API_URL` se compila en el bundle, hay que reconstruir la imagen del frontend al cambiarlo:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cloudflared.yml up -d --build
+```
+
+Con Compose v1, ante el error `KeyError: 'ContainerConfig'`, añade `DOCKER_BUILDKIT=0` delante del comando. Los pasos completos y la verificación están en `README.md`, sección 4.2.
+
 ### 10.5 Escalado
 
 - La API es stateless (sin sesiones en memoria), por lo que puede escalar horizontalmente.
